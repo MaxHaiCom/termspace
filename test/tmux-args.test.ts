@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import {
   assembleSpawnArgs,
   identityValueIsSecret,
+  serverEnvKeysToScrub,
   shellQuote,
   tmuxClientEnv
 } from '../src/main/tmux-args.ts'
@@ -215,4 +216,85 @@ test('TERMBOARD_HOOK_TOKEN 绝不进 argv —— 它能伪造 SessionStart', () 
     assert.ok(flat.includes('TERMBOARD_NODE_ID=t1'), '节点 id 必须下发')
     assert.ok(flat.includes('TERMBOARD_HOOK_ENDPOINT=/x/endpoint.env'), 'endpoint 路径必须下发')
   }
+})
+
+/* ── server 全局环境的残留清理 ──────────────────────────────────────────
+   起因（2026-08-13 实测）：本机 tmux server 起于 7/24 22:36，`show-environment -g`
+   里躺着那一刻的整份快照 —— 一次 `npm run dev` 自检（TERMBOARD_SHOT /
+   ELECTRON_RENDERER_URL / npm_*）外加 20 天前的 CLAUDE_CODE_SESSION_ID。
+   于是今天新建的每个终端都在继承它，里面的 claude CLI 以为自己是某个
+   早已结束的会话的子会话。tmuxClientEnv 只管**下一个** server，救不了这个。 */
+
+const SAMPLE_ENV = [
+  'TERMBOARD_NODE_ID=t-43fd9f',
+  'TERMBOARD_SHOT=/tmp/q.png',
+  'CLAUDE_CODE_SESSION_ID=8e260e22',
+  'CLAUDE_CODE_CHILD_SESSION=1',
+  'CLAUDECODE=1',
+  'CLAUDE_PID=4417',
+  'AI_AGENT=claude-code_2-1-218_agent',
+  'CODEX_COMPANION_SESSION_ID=8e260e22',
+  'ELECTRON_RENDERER_URL=http://localhost:5173',
+  'npm_lifecycle_event=dev',
+  'NODE_ENV=development',
+  'INIT_CWD=/Users/x/proj',
+  'WARP_IS_LOCAL_SHELL_SESSION=1',
+  'TERM_PROGRAM=WarpTerminal',
+  // 以下必须留下
+  'CLAUDE_CONFIG_DIR=/Users/x/.claude-alt',
+  'CODEX_HOME=/Users/x/.codex-alt',
+  'HTTP_PROXY=http://127.0.0.1:10808',
+  'OPENAI_API_KEY=sk-xxxx',
+  'GITHUB_TOKEN=ghp_xxxx',
+  'PATH=/usr/bin',
+  'HOME=/Users/x',
+  /* 这两条**必须是 deny 表打得中的键**，否则「去掉前导减号守卫」这个变异
+     不会让下面那条用例变红 —— 拿 `-DISPLAY` 当样本就是一条假绿（实测过：
+     deny 规则全 `^` 锚定时，`-DISPLAY` 本来就匹配不上，去掉守卫也全绿）。 */
+  '-CODEX_COMPANION_SESSION_ID',
+  '-DISPLAY'
+].join('\n')
+
+test('清掉「某一次进程身份」的键，留下身份隔离与用户自己的环境。', () => {
+  const gone = new Set(serverEnvKeysToScrub(SAMPLE_ENV))
+
+  for (const k of [
+    'TERMBOARD_NODE_ID',
+    'TERMBOARD_SHOT',
+    'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_CHILD_SESSION',
+    'CLAUDECODE',
+    'CLAUDE_PID',
+    'AI_AGENT',
+    'CODEX_COMPANION_SESSION_ID',
+    'ELECTRON_RENDERER_URL',
+    'npm_lifecycle_event',
+    'NODE_ENV',
+    'INIT_CWD',
+    'WARP_IS_LOCAL_SHELL_SESSION',
+    'TERM_PROGRAM'
+  ])
+    assert.ok(gone.has(k), `${k} 是某次进程/会话的身份，不该被后来的终端继承`)
+
+  /* CLAUDE_CONFIG_DIR / CODEX_HOME 是**身份隔离的载体** —— 删掉等于把绑了凭证的
+     会话退回系统默认账号，而且不报错。这正是 deny 表逐条写死、
+     不写成「凡 CLAUDE_ 开头都删」的理由。 */
+  assert.ok(!gone.has('CLAUDE_CONFIG_DIR'), '删了它 = 绑凭证的会话静默退回系统默认账号')
+  assert.ok(!gone.has('CODEX_HOME'), '同上')
+
+  /* 密钥和代理是用户 shell 里本来就 export 的，终端继承它们是既定行为
+     （要删走 identity 的 env -u）。在这里顺手删 = 悄悄改掉用户终端的行为。 */
+  for (const k of ['HTTP_PROXY', 'OPENAI_API_KEY', 'GITHUB_TOKEN', 'PATH', 'HOME'])
+    assert.ok(!gone.has(k), `${k} 不归这里管`)
+})
+
+test('已被标记移除的键（前导减号）不再重复 unset。', () => {
+  /* `show-environment -g` 里 `-KEY` 表示该键在全局环境中已被移除，本来就不生效了。
+     不挡住的话每次启动都要白跑一串 set-environment 子进程 —— 而且键名会是
+     `-DISPLAY` 这种带减号的畸形值。 */
+  const gone = serverEnvKeysToScrub(SAMPLE_ENV)
+  assert.ok(
+    gone.every((k) => !k.startsWith('-')),
+    '把 -KEY 当成了要清的键'
+  )
 })

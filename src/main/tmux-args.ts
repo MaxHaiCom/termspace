@@ -47,6 +47,69 @@ export function tmuxClientEnv(
 }
 
 /**
+ * 不该留在 tmux **server 全局环境**里的键。
+ *
+ * 起因（2026-08-13 实测）：本机的 tmux server 是 **7/24 22:36** 起的，
+ * 而 `show-environment -g` 里躺着那一刻的整份快照 —— `TERMBOARD_SHOT`、
+ * `ELECTRON_RENDERER_URL`、`npm_*`（一次 dev 自检运行），外加一个 20 天前的
+ * `CLAUDE_CODE_SESSION_ID` + `CLAUDE_CODE_CHILD_SESSION=1` + `CLAUDECODE=1`。
+ * 于是**今天新建的每个终端**都继承这份快照，里面跑的 claude CLI 会认为自己是
+ * 某个早已结束的会话的子会话。
+ *
+ * `tmuxClientEnv` 已经从**客户端**环境里摘掉了这些，但那只对**将来**要起的 server 有效 ——
+ * server 一旦起来就活到 kill-server 为止，全局环境再也不跟着变。所以必须能**就地清**
+ * （`set-environment -g -u`），否则唯一的修法是杀掉所有会话。
+ *
+ * 判据是「这个键描述的是**某一次进程/会话的身份**」，不是「它看起来没用」：
+ * - `TERMBOARD_*`：本该每会话 `-e` 下发，全局残留会让手开的 window 顶着别的节点身份
+ * - `CLAUDE_CODE_* / CLAUDECODE / AI_AGENT / CODEX_COMPANION_SESSION_ID`：某次 agent 会话的身份
+ * - `ELECTRON_* / npm_* / NODE_ENV* / INIT_CWD`：起 server 那次 `npm run dev` 的残留
+ * - `WARP_* / TERM_PROGRAM*`：起 server 的那个终端模拟器是谁 —— 在 Termspace 里一律是错的
+ *
+ * **故意不含密钥和代理**：`OPENAI_API_KEY` / `GITHUB_TOKEN` / `HTTP_PROXY` 这些
+ * 是用户 shell 里本来就 export 的东西，终端继承它们是既定行为（identity 要删的走
+ * `env -u`，见 assembleSpawnArgs）。在这里顺手删掉 = 悄悄改掉用户终端的行为，
+ * 那是另一件事，得用户自己决定。
+ */
+const SERVER_ENV_DENY: RegExp[] = [
+  /^TERMBOARD_/,
+  /^CLAUDE_CODE_/,
+  /^CLAUDECODE$/,
+  /^CLAUDE_(PID|BINARY|EFFORT|PLUGIN_DATA)$/,
+  /* 非锚定 —— 任何 `*_SESSION_ID` 都是"某一次会话"的身份。
+     它同时让上面那道前导减号守卫真正承重：`-CODEX_COMPANION_SESSION_ID`
+     在没有守卫时会被这条打中。全锚定的规则集里那道守卫是测不出来的。 */
+  /_SESSION_ID$/,
+  /^AI_AGENT$/,
+  /^ELECTRON_/,
+  /^npm_/,
+  /^NODE_ENV/,
+  /^INIT_CWD$/,
+  /^WARP_/,
+  /^TERM_PROGRAM/
+]
+
+/**
+ * `show-environment -g` 的输出 → 要清掉的键。
+ *
+ * ⚠️ 输入里 `-KEY`（前导减号）表示"这个键在全局环境里被标记为移除"，
+ * 它**本来就已经不生效了**，再去 `-u` 一遍纯属白跑子进程。
+ */
+export function serverEnvKeysToScrub(showEnvironmentOutput: string): string[] {
+  const out: string[] = []
+  for (const line of showEnvironmentOutput.split('\n')) {
+    const s = line.trim()
+    if (!s || s.startsWith('-')) continue
+    const key = s.split('=')[0]
+    /* `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 必须留下 —— 它们是身份隔离的载体，
+       删掉等于把绑了凭证的会话退回系统默认账号。deny 表里逐条写死正是为此，
+       别改成「凡是 CLAUDE_ 开头的都删」。 */
+    if (key && SERVER_ENV_DENY.some((re) => re.test(key))) out.push(key)
+  }
+  return out
+}
+
+/**
  * 这个键的值是不是密钥。
  *
  * 密钥**不能走 `tmux -e`** —— 那会把值原样写进 tmux 客户端的 argv，

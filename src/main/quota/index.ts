@@ -138,15 +138,38 @@ export function apiKeyUnavailable(a: QuotaAccount, presence: AccountPresence): A
   }
 }
 
-/** 统一选择真实采集结果或 API key 兜底，避免测试和生产各写一套判定顺序 */
+/**
+ * 统一选择真实采集结果或 API key 兜底，避免测试和生产各写一套判定顺序。
+ *
+ * **`r` 非 null 就一律用它 —— 哪怕这次采集失败了。**
+ *
+ * 老实现的顺序是「有窗口 → 用；否则 api-key → 兜底；否则用 r」，于是
+ * `kind === 'api-key'` 的账号只要**采集失败**（超时 / app-server 提前退出 /
+ * 找不到二进制），采集器带回来的真实诊断就被 `apiKeyUnavailable` 整个盖掉，
+ * 界面显示 **「仅管理员可查询」**（`admin_only`）。
+ *
+ * 这句话三重错：codex 的额度**根本不是** admin-only（本机手跑同一个接口就能拿到
+ * 周窗 28%）；它把一次**瞬时**网络超时说成**永久**的权限限制；而真正的原因
+ * （"本次查询失败"）被丢掉了，用户没有任何线索去修。
+ *
+ * 触发条件在本机是常态而非边角：登录 shell 里 export 了 `OPENAI_API_KEY`，
+ * `billingKind` 就把 `system:codex` 判成 api-key；而 `mayProbe` 对 `system:*`
+ * 一律放行 —— 也就是说**系统默认账号永远会走采集，失败时永远落进这个兜底**。
+ *
+ * 兜底的正确适用范围只有一条：**采集根本没跑**（`mayProbe` 拒了，或这个 provider
+ * 没有采集器）—— 那时 `r === null`，此时说「API key 按量计费，没有订阅额度可查」
+ * 才是真话。CLAUDE.md 里「只有采集器确实空手而归才退回按量计费那句话」说的就是它，
+ * 上一轮只修到了 `r === null` 这一半，"跑了但失败"仍在被当成"空手而归"。
+ *
+ * 「api-key 账号不该显示订阅额度」由 `mayProbe` 在**采集之前**保证，不靠这里兜。
+ */
 export function pickQuota(
   a: QuotaAccount,
   presence: AccountPresence,
   r: AccountQuota | null
 ): AccountQuota | null {
-  if (r && hasRealWindows(r)) return decorateQuota(a, presence, r)
-  if (a.kind === 'api-key') return apiKeyUnavailable(a, presence)
   if (r) return decorateQuota(a, presence, r)
+  if (a.kind === 'api-key') return apiKeyUnavailable(a, presence)
   return null
 }
 

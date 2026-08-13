@@ -114,12 +114,42 @@ test('系统账号被推断为 API key 时仍然优先显示采集到的真实�
   assert.ok(!final.hint?.includes('按量计费'), '不该再挂按量计费的说明')
 })
 
-test('API key 账号只有在采集器空手时才退回按量计费说明。', () => {
+test('API key 账号只有在采集器压根没跑时才退回按量计费说明。', () => {
+  /* 「空手而归」= `r === null`（mayProbe 拒了，或这个 provider 没有采集器）。
+     这条用例原来传的是一个**非空**的 r，名字和断言对不上 —— 它钉住的正是下面那条
+     bug 的行为。 */
   const a = acct({ kind: 'api-key' })
-  const p = defaultPresence(a)
-  const r = collected({ state: 'unconfigured', windows: [] })
-  const final = pickQuota(a, p, r)
+  const final = pickQuota(a, defaultPresence(a), null)
   assert.match(final?.hint ?? '', /按量计费/)
+  assert.equal(final?.quotaCapability, 'admin_only')
+})
+
+test('采集器跑过但失败时，报的是本次失败，不是「仅管理员可查询」。', () => {
+  /* 本机实况：登录 shell 里 export 了 OPENAI_API_KEY → system:codex 被判成 api-key；
+     而 mayProbe 对 system:* 一律放行 → 采集**一定**会跑。于是一次网络超时
+     （codex app-server 的 rateLimits 走网络，15s 硬超时）就会走进 api-key 兜底，
+     界面显示「仅管理员可查询」。
+
+     那句话是错的：手跑同一个接口拿得到周窗 28%，codex 的额度不是 admin-only；
+     而且它把**瞬时**失败说成**永久**权限限制，真因还被丢了。 */
+  const a = acct({ kind: 'api-key' })
+  const r = collected({ state: 'unavailable', windows: [], hint: '查询超时' })
+
+  const final = pickQuota(a, defaultPresence(a), r)
+
+  assert.notEqual(final?.quotaCapability, 'admin_only', '把一次超时说成了权限限制')
+  assert.equal(final?.state, 'unavailable')
+  assert.match(final?.hint ?? '', /超时/, '采集器带回的真实诊断被兜底盖掉了')
+})
+
+test('采集器说未登录时，保留「未登录」而不是换成按量计费。', () => {
+  /* 「未登录」用户能自己修（去跑一次 login），「按量计费查不到」只能干等 ——
+     这两句话给出的下一步动作完全不同，不能互相顶替。 */
+  const a = acct({ kind: 'api-key' })
+  const r = collected({ state: 'unconfigured', windows: [] })
+  const final = pickQuota(a, defaultPresence(a), r)
+  assert.equal(final?.state, 'unconfigured')
+  assert.ok(!final?.hint?.includes('按量计费'))
 })
 
 test('API key 账号没有隔离目录时不会调用 probe。', async () => {

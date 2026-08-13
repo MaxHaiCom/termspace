@@ -11,7 +11,12 @@ import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { assembleSpawnArgs, TMUX_SOCKET as SOCKET, type IdentityEnvSpec } from './tmux-args.ts'
+import {
+  assembleSpawnArgs,
+  serverEnvKeysToScrub,
+  TMUX_SOCKET as SOCKET,
+  type IdentityEnvSpec
+} from './tmux-args.ts'
 import {
   descendantPids,
   descendantProvider,
@@ -36,6 +41,7 @@ set -as terminal-features ",*:clipboard"
 
 let tmuxPath: string | null | undefined // undefined=未探测 null=没有
 let confWritten = -1 // 已写入 conf 的 scrollback 值（变了要重写）
+let scrubbed = false // 本次 app 运行是否已清过 server 全局环境
 
 function confPath(): string {
   return path.join(app.getPath('userData'), 'tmux.conf')
@@ -49,6 +55,14 @@ export async function ensureTmux(scrollback = 8000): Promise<string | null> {
   if (tmuxPath && confWritten !== scrollback) {
     await writeFile(confPath(), conf(scrollback))
     confWritten = scrollback
+  }
+  /* 每次 app 启动清一次。**放在这里而不是 whenReady**：没开 tmux 的用户根本不该
+     被跑一串子进程，而这里是"确实要用 tmux"的唯一入口。没有 server 时
+     show-environment 直接失败返回空串，不会把 server 起起来。 */
+  if (tmuxPath && !scrubbed) {
+    scrubbed = true
+    const gone = await scrubServerEnv()
+    if (gone.length) console.log(`[tmux] 清掉 server 全局环境残留：${gone.join(' ')}`)
   }
   return tmuxPath
 }
@@ -76,6 +90,37 @@ const paneTarget = (nodeId: string): string => `=${sessionName(nodeId)}:`
 
 export function hasSession(nodeId: string): Promise<boolean> {
   return run(['has-session', '-t', target(nodeId)])
+}
+
+/** `show-environment -g` 的原始输出；没有 server 时返回空串 */
+function showGlobalEnv(): Promise<string> {
+  return new Promise((resolve) => {
+    if (!tmuxPath) return resolve('')
+    execFile(
+      tmuxPath,
+      ['-L', SOCKET, 'show-environment', '-g'],
+      { timeout: 5000 },
+      (err, stdout) => resolve(err ? '' : stdout)
+    )
+  })
+}
+
+/**
+ * 清掉 server 全局环境里那些「某一次进程身份」的残留，返回清掉的键。
+ *
+ * **为什么必须就地清、而不是靠 `tmuxClientEnv` 拦源头**：server 的全局环境是
+ * **第一个客户端**的环境快照，此后活到 kill-server 为止都不再变。本机实测那份快照
+ * 来自 2026-07-24 22:36 的一次 `npm run dev` 自检 —— 20 天里新建的每个终端都在继承它。
+ * 拦源头只能保证**下一个** server 干净，救不了正在跑的这个，而唯一的替代修法
+ * （kill-server）会把用户所有续存会话一起带走。
+ *
+ * 只影响**此后新建**的会话：已经起来的 pane 环境是它自己的，tmux 不会回溯改写。
+ * 这是对的 —— 正在跑的活不该被脚下换环境。
+ */
+export async function scrubServerEnv(): Promise<string[]> {
+  const keys = serverEnvKeysToScrub(await showGlobalEnv())
+  for (const k of keys) await run(['set-environment', '-g', '-u', k])
+  return keys
 }
 
 export function killSession(nodeId: string): Promise<boolean> {
