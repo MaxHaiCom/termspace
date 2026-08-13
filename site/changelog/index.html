@@ -48,9 +48,31 @@
 
     <div class="rel rise">
       <div>
-        <div class="v">0.4.0</div>
+        <div class="v">0.4.1</div>
         <div class="d">2026-08-13</div>
         <div style="margin-top:8px"><span class="chip g">当前</span></div>
+      </div>
+      <div>
+        <h3>修复</h3>
+        <ul>
+          <li><strong>终端不再继承一份陈旧的环境快照</strong> —— tmux 的服务进程活得比 app 久，
+            而它的全局环境是<strong>第一次启动那一刻</strong>的整份快照，此后再也不变。
+            本机实测那份快照来自 20 天前的一次开发运行，于是新建的每个终端都继承着
+            一个早已结束的会话的身份（CLI 会以为自己是那个会话的子进程、
+            以为自己跑在另一个终端模拟器里、拿到别的节点的编号）。
+            现在每次启动会就地清掉这类「某一次进程身份」的变量，
+            <strong>不动你自己 shell 里 export 的东西</strong>，也不影响已经开着的终端</li>
+          <li><strong>额度查询失败不再谎报成「仅管理员可查询」</strong> —— 一次网络超时
+            会被显示成一条<strong>永久</strong>的权限限制，而真正的原因被丢掉，
+            用户没有任何线索去修。现在如实显示「本次查询失败」并带上具体原因</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="rel rise">
+      <div>
+        <div class="v">0.4.0</div>
+        <div class="d">2026-08-13</div>
       </div>
       <div>
         <h3>新增</h3>

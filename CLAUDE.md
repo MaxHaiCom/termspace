@@ -220,6 +220,60 @@ TERMBOARD_FITPROBE=1                      # 量终端 canvas 溢出内容区多�
 - 每个采集器都要 `windows.length ? 'ok' : 'unknown-shape'`；Hub 的 `setAccounts` 要比
   **指纹**（含 name / env）而不是 accountId —— 换了 `CODEX_HOME` 而 id 不变时会继续显示旧号
 
+## tmux server 的环境是**快照**，不是**视图**（2026-08-13）
+
+`show-environment -g` 里的东西 = **第一个客户端**启动那一刻的整份环境，
+此后活到 `kill-server` 为止再也不变。本机实测那份快照来自 **7/24 22:36 的一次
+`npm run dev` 自检**，于是 20 天里新建的每个终端都在继承它：
+`CLAUDECODE=1` + 一个早已结束的 `CLAUDE_CODE_SESSION_ID` + `CLAUDE_CODE_CHILD_SESSION=1`
+（新起的 claude CLI 以为自己是那个会话的子会话）、`TERM_PROGRAM=WarpTerminal`、
+`TERMBOARD_NODE_ID`/`CONTEXT_FILE`/`AGENT_ID`（本该每会话 `-e` 独有）、`ELECTRON_*`/`npm_*`。
+
+`tmuxClientEnv` 从**客户端**环境摘掉这些是对的，但它**只管下一个 server**。
+所以必须能**就地清**（`scrubServerEnv` → `set-environment -g -u`，每次 app 启动一次），
+否则唯一修法是杀光用户所有续存会话。只影响此后新建的会话 —— 已起来的 pane
+tmux 不回溯改写，这是对的：正在跑的活不该被脚下换环境。
+
+- **判据是「这个键描述某一次进程/会话的身份」**，不是「它看起来没用」。
+  `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 必须留 —— 删掉 = 绑了凭证的会话**静默**退回系统默认账号。
+  所以 deny 表逐条写死，**绝不写成「凡 CLAUDE_ 开头都删」**
+- **故意不清密钥和代理**（`OPENAI_API_KEY` / `GITHUB_TOKEN` / `HTTP_PROXY`）：
+  那些是用户 shell 里本来就 export 的，终端继承是既定行为（要删走 identity 的 `env -u`）。
+  在这里顺手删 = 悄悄改掉用户终端的行为，那是另一件事
+- 排查同类问题时**先看 server 起于何时**（`ps -o lstart`），别看 app 起于何时
+
+## 采集"跑了但失败" ≠ "空手而归"（2026-08-13）
+
+`pickQuota` 的老顺序「有窗口 → 用；否则 api-key → 兜底；否则用 r」，
+让 `kind === 'api-key'` 的账号只要**采集失败**（超时/提前退出/找不到二进制），
+采集器带回的诊断就被 `apiKeyUnavailable` 整个替换成 `admin_only` →
+界面写 **「仅管理员可查询」**。
+
+三重错：codex 额度根本不是 admin-only（手跑同一接口拿得到周窗）；
+把**瞬时**超时说成**永久**权限限制；真因被丢掉，用户没线索去修。
+且本机是常态不是边角 —— 登录 shell export 了 `OPENAI_API_KEY` → `system:codex`
+判成 api-key，而 `mayProbe` 对 `system:*` 一律放行 → **系统默认账号永远走采集，
+一失败就永远掉进兜底**。
+
+`r` 非 null 就一律用它；兜底只留给 `r === null`（`mayProbe` 拒了 / 没有采集器）。
+「api-key 不该显示订阅额度」由 `mayProbe` 在**采集之前**保证，不靠这里兜。
+上一轮「只有采集器确实空手而归才退回按量计费」只修到了 `r === null` 那一半。
+
+⚠️ 老用例叫「只有在采集器**空手**时才退回」，传的却是个**非空**的 `r` ——
+**名字和断言对不上的用例，钉住的往往正是那个 bug**。
+
+## 变异测试的第三种形状：守卫根本不承重（2026-08-13）
+
+给 `serverEnvKeysToScrub` 写了条「`-KEY`（已标记移除）不再重复 unset」的用例，
+样本用 `-DISPLAY`。**把守卫删掉，全绿** —— 因为 deny 规则全是 `^` 锚定的，
+`-DISPLAY` 本来就匹配不上，有没有守卫结果一模一样。
+
+这不是「用例写弱了」，是**被测的那行代码在当前规则集下不可能改变输出**。
+补了一条本就该有的非锚定规则 `_SESSION_ID$`、样本换成 `-CODEX_COMPANION_SESSION_ID`，
+守卫才真正承重，删掉必红。
+
+> 修假绿的正确方向常常是**让实现变得可证伪**，而不是把断言写得更花。
+
 ## 凭证的三态 envOps（2026-07-29 取代空字符串重载）
 
 存的不再是 `Record<string,string>`，而是
