@@ -4,13 +4,13 @@ import {
   ReactFlowProvider,
   Background,
   BackgroundVariant,
-  Controls,
   MiniMap,
   Panel,
   applyNodeChanges,
   applyEdgeChanges,
   addEdge,
   useReactFlow,
+  useStore,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -43,6 +43,7 @@ import { SettingsPanel, type SettingsSection } from './SettingsPanel'
 import { shouldShowAccount } from './quota-visibility'
 import { countUsing } from './quota-usage'
 import { loadHudPrefs, saveHudPrefs, toggleIn, type HudPrefs } from './hud-prefs'
+import { loadCanvasPrefs, saveCanvasPrefs, nextBg, BG_LABEL } from './canvas-prefs'
 import { hasQuotaProgress, maskEmail, quotaUnavailableText } from './quota-display'
 import { placeNewNode, viewportCenter } from './place-node'
 import { CommandPalette } from './CommandPalette'
@@ -59,7 +60,9 @@ import {
   IconChevron,
   IconGlobe,
   IconHand,
-  IconCursor
+  IconCursor,
+  IconPlus,
+  IconMinus
 } from './Icons'
 import { PROVIDERS } from '../../shared/provider-manifest'
 
@@ -1105,16 +1108,48 @@ function Board(): React.JSX.Element {
     edgeId?: string
   } | null>(null)
   const [mapActive, setMapActive] = useState(false)
+  // 控件栈里的百分比要跟着画布走 —— 订阅 transform 而不是每帧 getViewport()
+  const [canvasPrefs, setCanvasPrefs] = useState(loadCanvasPrefs)
+  const patchCanvasPrefs = useCallback((patch: Partial<typeof canvasPrefs>): void => {
+    setCanvasPrefs((prev) => {
+      const next = { ...prev, ...patch }
+      saveCanvasPrefs(next)
+      return next
+    })
+  }, [])
+
+  const zoomPct = useStore((st) => st.transform[2])
   const [canvasMode, setCanvasMode] = useState<'pan' | 'select'>('pan')
   const mapTimer = useRef(0)
   const [ctxMap, setCtxMap] = useState<Record<string, NodeCtx>>({})
   const [projects, setProjects] = useState<Project[]>([])
   const [activeProject, setActiveProject] = useState('')
   // 非活跃项目的画布（终端不销毁 pty，tmux 会话续存，切回来自动 attach）
+  /* ⌘1…9 要在 keydown handler 里读最新的项目列表，而 handler 只挂一次 ——
+     直接闭包捕获 projects 会一直读到挂载那一刻的旧值。 */
+  const projectsRef = useRef<Project[]>([])
+  projectsRef.current = projects
+
+  /**
+   * 当前选中的节点 id，**连同组内子节点**。
+   *
+   * 单独抽出来是因为 ⌫ 和 ⌘W 用的是同一套判定，各写一遍必然分叉。
+   * 子节点必须一起收：只删组的话，子节点会变成看不见也删不掉的孤儿
+   * （画布上没有它们的位置，而 reap 认的是"所有 board 里出现过的节点 id"，
+   *  于是里面的终端会一直活着）。
+   */
+  const selectedWithChildren = useCallback((): string[] => {
+    const sel = new Set(nodesRef.current.filter((n) => n.selected).map((n) => n.id))
+    if (!sel.size) return []
+    return nodesRef.current
+      .filter((n) => n.selected || (n.parentId && sel.has(n.parentId)))
+      .map((n) => n.id)
+  }, [])
+
   const boardsRef = useRef<Record<string, SavedBoard>>({})
   const hadSaved = useRef(false)
   const viewportRef = useRef<Viewport | null>(null)
-  const { setViewport, fitView, getViewport } = useReactFlow()
+  const { setViewport, fitView, getViewport, zoomIn, zoomOut, zoomTo } = useReactFlow()
   /* 新节点落在**当前视口正中**（判据见 place-node.ts）。
      老实现用画布绝对坐标的固定网格，把画布拖走之后新建的节点会出现在几千像素外，
      每次都要满画布找 —— 用户实测报的就是这个。 */
@@ -2310,19 +2345,70 @@ function Board(): React.JSX.Element {
           )
         )
           return
-        const selIds = new Set(nodesRef.current.filter((n) => n.selected).map((n) => n.id))
-        if (!selIds.size) return
-        // 选中里若有集群，子节点要一起删 —— 否则组没了、子节点变成看不见也删不掉的孤儿
-        const gone = nodesRef.current
-          .filter((n) => n.selected || (n.parentId && selIds.has(n.parentId)))
-          .map((n) => n.id)
+        const gone = selectedWithChildren()
+        if (!gone.length) return
         e.preventDefault()
         void removeNodes(gone, gone.length > 1 ? `删除选中的 ${gone.length} 个节点` : '删除该节点')
+      }
+
+      if (!(e.metaKey || e.ctrlKey)) return
+      const k = e.key.toLowerCase()
+      const inField = (): boolean =>
+        !!(e.target as HTMLElement | null)?.closest('input, textarea, select, [contenteditable]')
+
+      /* ⇧⌘W 关窗口 · ⌘W 关选中的节点。
+         **两者的后果差一个数量级**：关窗口只 releasePty，tmux 会话全部续存
+         （下次打开原样回来）；关节点是 destroyPty = kill-session，里面跑着的
+         那一轮 agent 对话再也回不来（⌘Z 能还原布局和配置，还不了会话）。
+         所以 ⌘W 必须走 removeNodes 那个带确认的入口，不能直接删。
+
+         ⚠️ **没选中节点时 ⌘W 什么都不做。** 最初的设计是"没选中就关 app"，
+         但那是个很糟的失败模式：想关一个节点、恰好没选中，整个 app 就没了。
+         关窗口已经由 ⇧⌘W 明确承担，不需要一个会误伤的兜底。 */
+      if (k === 'w') {
+        e.preventDefault()
+        if (e.shiftKey) {
+          window.close()
+          return
+        }
+        const gone = selectedWithChildren()
+        if (!gone.length) {
+          setNotice('没有选中的节点。⌘W 关闭选中的终端，⇧⌘W 关闭窗口。')
+          return
+        }
+        void removeNodes(gone, gone.length > 1 ? `关闭选中的 ${gone.length} 个节点` : '关闭该节点')
+        return
+      }
+
+      if (inField()) return // 下面这些在输入框里都有原生语义，别抢
+
+      if (k === 't') {
+        e.preventDefault()
+        addTerminal()
+      } else if (k === '0') {
+        e.preventDefault()
+        void zoomTo(1, { duration: 160 })
+      } else if (e.key === '=' || e.key === '+') {
+        e.preventDefault()
+        void zoomIn({ duration: 160 })
+      } else if (e.key === '-') {
+        e.preventDefault()
+        void zoomOut({ duration: 160 })
+      } else if (k === 'f' && e.shiftKey) {
+        e.preventDefault()
+        void fitView({ padding: 0.2, duration: 300 })
+      } else if (/^[1-9]$/.test(e.key)) {
+        // ⌘1…9 切标签页。越界（只有 3 个项目却按 ⌘7）什么都不做，别跳到最后一个
+        const target = projectsRef.current[Number(e.key) - 1]
+        if (target) {
+          e.preventDefault()
+          switchProject(target.id)
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [undoDelete, removeNodes])
+  }, [undoDelete, removeNodes, selectedWithChildren, addTerminal, switchProject, zoomIn, zoomOut, zoomTo, fitView])
 
   const deleteMenuNode = useCallback(() => {
     if (!menuNode) return
@@ -2448,14 +2534,22 @@ function Board(): React.JSX.Element {
           connectionLineStyle={{ stroke: '#0A84FF', strokeWidth: 2 }}
           proOptions={{ hideAttribution: true }}
         >
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={24}
-            size={1.2}
-            color="rgba(255, 255, 255, 0.22)"
-            bgColor="transparent"
-          />
-          <Controls position="bottom-left" showInteractive={false} />
+          {/* 'plain' 不是"画一个纯色背景",是**根本不渲染 Background** ——
+              画布本来就透着 --tb-bg,多画一层只会多一次合成。 */}
+          {canvasPrefs.bg !== 'plain' && (
+            <Background
+              variant={canvasPrefs.bg === 'grid' ? BackgroundVariant.Lines : BackgroundVariant.Dots}
+              gap={24}
+              /* 网格是连续的线,和点阵同样的不透明度会明显更吵 —— 压暗一档 */
+              size={canvasPrefs.bg === 'grid' ? 1 : 1.2}
+              color={
+                canvasPrefs.bg === 'grid'
+                  ? 'rgba(255, 255, 255, 0.055)'
+                  : 'rgba(255, 255, 255, 0.22)'
+              }
+              bgColor="transparent"
+            />
+          )}
           {undoHint && !saveErr && !notice && (
             <Panel position="bottom-center" className="undo-toast">
               已{undoHint.label}
@@ -2484,9 +2578,14 @@ function Board(): React.JSX.Element {
               </button>
             </Panel>
           )}
-          <Panel position="bottom-left" className="mode-switch">
+          {/* 画布控件栈。**一个容器,不是两个叠起来。**
+              老实现是 React Flow 自带的 <Controls> 加一个独立的 .mode-switch 面板,
+              靠 `margin-bottom: 92px !important` 手工让开 —— 于是圆角(9 vs 10)、
+              按钮尺寸、内边距三处都对不齐,而且那个魔数一改布局就废。
+              合成一个之后顺带装下缩放百分比。 */}
+          <Panel position="bottom-left" className="canvas-dock">
             <button
-              className={`mode-btn active ${canvasMode}`}
+              className={`dock-btn mode ${canvasMode}`}
               title={
                 canvasMode === 'pan'
                   ? '当前：拖拽平移（Shift 框选）· 点击切到框选'
@@ -2495,6 +2594,37 @@ function Board(): React.JSX.Element {
               onClick={() => setCanvasMode((m) => (m === 'pan' ? 'select' : 'pan'))}
             >
               {canvasMode === 'pan' ? <IconHand /> : <IconCursor />}
+            </button>
+            <span className="dock-sep" />
+            <button className="dock-btn" title="放大（⌘=）" onClick={() => zoomIn({ duration: 160 })}>
+              <IconPlus />
+            </button>
+            {/* 百分比同时是按钮:点一下回 100%(⌘0)。
+                纯展示的数字在这里是浪费 —— 用户看到"37%"的下一个念头就是想回去。 */}
+            <button
+              className="dock-zoom"
+              title="缩放（点击回到 100%，⌘0）"
+              onClick={() => zoomTo(1, { duration: 160 })}
+            >
+              {Math.round(zoomPct * 100)}%
+            </button>
+            <button className="dock-btn" title="缩小（⌘-）" onClick={() => zoomOut({ duration: 160 })}>
+              <IconMinus />
+            </button>
+            <span className="dock-sep" />
+            <button
+              className="dock-btn"
+              title="全览所有节点（⇧⌘F）"
+              onClick={() => void fitView({ padding: 0.2, duration: 300 })}
+            >
+              <IconFit />
+            </button>
+            <button
+              className="dock-btn dock-bg"
+              title={`画布背景：${BG_LABEL[canvasPrefs.bg]}（点击切换）`}
+              onClick={() => patchCanvasPrefs({ bg: nextBg(canvasPrefs.bg) })}
+            >
+              {BG_LABEL[canvasPrefs.bg].slice(0, 1)}
             </button>
           </Panel>
           <MiniMap
@@ -2578,7 +2708,7 @@ function Board(): React.JSX.Element {
             </div>
           </Panel>
           <Panel position="top-left" className="board-top">
-            <div className="toolbar">
+            <div className={`toolbar${canvasPrefs.toolbarCollapsed ? ' collapsed' : ''}`}>
             {/* 拆分按钮：最高频的「新建终端」保持一键，其余节点类型收进下拉。
                 此前 4 个带文字 + 3 个纯图标混排，没有主次，视觉也乱。 */}
             <span className="agent-menu-wrap split">
@@ -2666,13 +2796,13 @@ function Board(): React.JSX.Element {
                 </div>
               )}
             </span>
-            {selectedCount >= 2 && (
+            {!canvasPrefs.toolbarCollapsed && selectedCount >= 2 && (
               <button className="toolbar-btn accent" onClick={groupSelected}>
                 <IconGroup />
                 <span>成组 {selectedCount}</span>
               </button>
             )}
-            {identities.length > 0 && (
+            {!canvasPrefs.toolbarCollapsed && identities.length > 0 && (
               <select
                 className="identity-select"
                 value={defaultIdentity}
@@ -2687,29 +2817,35 @@ function Board(): React.JSX.Element {
                 ))}
               </select>
             )}
-            <span className="toolbar-sep" />
+            {!canvasPrefs.toolbarCollapsed && (
+              <>
+                <span className="toolbar-sep" />
+                <button
+                  className="toolbar-btn icon-only"
+                  title="凭证管理"
+                  onClick={() => setSettingsOpen('identities')}
+                >
+                  <IconKey />
+                </button>
+                <button
+                  className="toolbar-btn icon-only"
+                  title="设置"
+                  onClick={() => setSettingsOpen('general')}
+                >
+                  <IconSettings />
+                </button>
+                <span className="toolbar-count">{nodes.length}</span>
+              </>
+            )}
+            {/* 折叠钮。**永远在最右**,展开/收起位置不变 —— 位置一跳,
+                用户第二次就找不到它了。 */}
             <button
-              className="toolbar-btn icon-only"
-              title="缩放到全部节点"
-              onClick={() => void fitView({ padding: 0.2, duration: 300 })}
+              className="toolbar-collapse"
+              title={canvasPrefs.toolbarCollapsed ? '展开工具栏' : '收起工具栏'}
+              onClick={() => patchCanvasPrefs({ toolbarCollapsed: !canvasPrefs.toolbarCollapsed })}
             >
-              <IconFit />
+              <IconChevron />
             </button>
-            <button
-              className="toolbar-btn icon-only"
-              title="凭证管理"
-              onClick={() => setSettingsOpen('identities')}
-            >
-              <IconKey />
-            </button>
-            <button
-              className="toolbar-btn icon-only"
-              title="设置"
-              onClick={() => setSettingsOpen('general')}
-            >
-              <IconSettings />
-            </button>
-            <span className="toolbar-count">{nodes.length}</span>
             </div>
           </Panel>
           {menu && (

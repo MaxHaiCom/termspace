@@ -957,40 +957,8 @@ body {
 }
 
 /* ── 手/框选 模式切换（左下，Controls 上方）──────────── */
-.mode-switch {
-  display: flex;
-  gap: 3px;
-  padding: 3px;
-  margin-bottom: 92px !important; /* 让开缩放 Controls */
-  background: var(--tb-panel-glass);
-  backdrop-filter: blur(24px) saturate(180%);
-  border: 0.5px solid var(--tb-hairline);
-  border-radius: 9px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-}
-.mode-btn {
-  width: 28px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: var(--tb-muted);
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease;
-}
-.mode-btn:hover {
-  color: var(--tb-text);
-  background: rgba(255, 255, 255, 0.06);
-}
-.mode-btn.active {
-  background: rgba(10, 132, 255, 0.9);
-  color: #fff;
-}
+
+
 
 /* minimap 自动隐藏：移动时浮现，静止淡出 */
 .react-flow__minimap.map-hidden {
@@ -1878,23 +1846,6 @@ body {
 .react-flow__minimap-mask {
   fill: rgba(255, 255, 255, 0.06);
 }
-.react-flow__controls {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  border: 0.5px solid var(--tb-hairline);
-  border-radius: 10px;
-  overflow: hidden;
-}
-.react-flow__controls button {
-  background: var(--tb-panel-glass);
-  backdrop-filter: blur(24px);
-  border-bottom: 0.5px solid var(--tb-hairline);
-  color: var(--tb-muted);
-  transition: color 0.15s ease;
-}
-.react-flow__controls button:hover {
-  background: rgba(44, 44, 46, 0.8);
-  color: var(--tb-text);
-}
 .react-flow__resize-control.handle {
   background: var(--tb-blue);
   border: 1.5px solid #fff;
@@ -2756,4 +2707,106 @@ body {
 /* 远景时整条收掉 —— 那一档连正文都看不见了 */
 .term-node.far .term-composer {
   display: none;
+}
+
+/* ── 画布控件栈（左下角）─────────────────────────────
+   **一个容器。** 老实现是 React Flow 自带 <Controls> + 一个独立的
+   .mode-switch 面板叠在一起,用 `margin-bottom: 92px !important` 手工让位 ——
+   于是圆角 9 vs 10、按钮尺寸、内边距三处都对不齐,而且那个魔数一改布局就废。
+   现在所有格子共用同一套尺寸,靠 .dock-sep 分组而不是靠两个盒子。 */
+.canvas-dock {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  padding: 3px;
+  background: var(--tb-panel-glass);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 0.5px solid var(--tb-hairline);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.dock-btn,
+.dock-zoom {
+  /* 统一格子。宽度由最宽的那个（百分比"100%"）决定,其余居中 */
+  width: 30px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--tb-muted);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.dock-btn:hover,
+.dock-zoom:hover {
+  color: var(--tb-text);
+  background: rgba(255, 255, 255, 0.07);
+}
+/* 背景钮显示当前档位的首字（点/网/纯）。**跟百分比同一档字号** ——
+   它继承默认字号时是个比周围线条图标重得多的方块字,在一列细线里很扎眼。 */
+.dock-bg {
+  font-size: 10px;
+  letter-spacing: 0;
+}
+.dock-zoom {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums; /* 数字等宽,37%→100% 时格子不跳 */
+  letter-spacing: -0.02em;
+}
+/* 当前模式高亮 —— 它是**状态**不是按钮,所以给实心蓝（同 DESIGN.md「glow 只给语义」） */
+.dock-btn.mode {
+  color: #fff;
+  background: var(--tb-blue);
+}
+.dock-btn.mode:hover {
+  background: #3b9dff;
+}
+.dock-sep {
+  height: 0.5px;
+  margin: 3px 4px;
+  background: var(--tb-hairline);
+}
+
+/* ── 工具栏折叠 ───────────────────────────────────
+   收起后只剩「新建终端」的图标和折叠钮本身。
+   最高频的动作**不跟着一起收** —— 折叠是为了让开画布,不是为了让人多点一次。 */
+.toolbar-collapse {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 26px;
+  padding: 0;
+  color: var(--tb-muted);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, transform 0.2s ease;
+}
+.toolbar-collapse:hover {
+  color: var(--tb-text);
+  background: rgba(255, 255, 255, 0.07);
+}
+/* 展开态箭头朝左（= 点它会收起）,收起态朝右。方向即动作,不用记 */
+.toolbar-collapse {
+  transform: rotate(90deg);
+}
+.toolbar.collapsed .toolbar-collapse {
+  transform: rotate(-90deg);
+}
+.toolbar.collapsed .split-main span,
+.toolbar.collapsed .split-caret {
+  display: none;
+}
+.toolbar.collapsed .split-main {
+  /* 文字没了之后,按钮要收成正方形,否则留一块空白比不折叠还怪 */
+  padding-left: 9px;
+  padding-right: 9px;
+  border-radius: 980px;
 }

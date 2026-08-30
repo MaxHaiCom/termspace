@@ -89,3 +89,10 @@ export const IconCursor = (): React.JSX.Element => (
     <path d="M5 3l7 18 2.5-7L21 11.5 5 3z" />
   </svg>
 )
+
+/** 缩放控件栈用。和 IconPlus 同一套线宽 —— 它们现在同处一个容器 */
+export const IconMinus = (): React.JSX.Element => (
+  <svg {...S}>
+    <path d="M5 12h14" />
+  </svg>
+)
