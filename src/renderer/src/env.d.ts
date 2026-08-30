@@ -258,7 +258,13 @@ interface TermspaceApi {
   terminalMeta: (
     id: string,
     fallbackCwd?: string
-  ) => Promise<{ cwd: string; live: boolean; branch: string | null; dirty: number | null } | null>
+  ) => Promise<{
+    cwd: string
+    live: boolean
+    branch: string | null
+    dirty: number | null
+    home: string
+  } | null>
   /** 带回执的写入（输入框用）。ok 才代表真进了 pty */
   sendInput: (id: string, data: string) => Promise<{ ok: boolean; reason?: string }>
   resize: (id: string, cols: number, rows: number) => void

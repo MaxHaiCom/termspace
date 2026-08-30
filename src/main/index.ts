@@ -991,7 +991,14 @@ ipcMain.handle('terminal:meta', async (e, id: unknown, fallbackCwd: unknown) => 
   const cwd = liveCwd || (typeof fallbackCwd === 'string' ? fallbackCwd : '')
   if (!cwd) return null
   const st = await worktreeStatus(cwd).catch(() => null)
-  return { cwd, live: Boolean(liveCwd), branch: st?.branch ?? null, dirty: st?.dirty ?? null }
+  return {
+    cwd,
+    live: Boolean(liveCwd),
+    branch: st?.branch ?? null,
+    dirty: st?.dirty ?? null,
+    // 渲染层展开 `~/x` 要用。放这里是因为它和 cwd 是同一次查询的自然搭档
+    home: os.homedir()
+  }
 })
 
 ipcMain.on('pty:resize', (e, id: string, cols: number, rows: number) => {

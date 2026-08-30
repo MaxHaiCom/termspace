@@ -4,6 +4,7 @@ import { FarChip, FAR_ZOOM } from './FarChip'
 import { usePinchZoom } from '../usePinchZoom'
 import { fitToNode } from '../fit-to-node'
 import { checkComposerSend, explainReject } from '../composer-send'
+import { findPaths, toAbsolute } from '../path-detect'
 import {
   Handle,
   NodeResizer,
@@ -140,6 +141,19 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
     window.clearTimeout(sizeTimer.current)
     sizeTimer.current = window.setTimeout(() => window.termspace.resize(id, cols, rows), 80)
   }
+  /* 打开文件用哪个编辑器。**放 ref 不放 state**:它只在链接被点的那一刻读一次,
+     用 state 会让每次设置变更都重跑整个 spawn effect(= 杀掉并重开终端)。 */
+  const editorRef = useRef('')
+  useEffect(() => {
+    void window.termspace
+      .getSettings()
+      .then((c) => {
+        const v = (c as { editorCommand?: string } | null)?.editorCommand
+        editorRef.current = typeof v === 'string' ? v : ''
+      })
+      .catch(() => {})
+  }, [])
+
   const composerOn = data.composer === true
   const taRef = useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = useState(() => draftStore.get(id) ?? '')
@@ -333,6 +347,50 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
       contextNodeIds: ctxIds ? ctxIds.split(',') : [],
       cwd: data.cwd
     })
+    /* 终端输出里的文件路径可点。**⌘/Ctrl + 点击才打开** ——
+       裸点击是选文本,抢过来的话在终端里就没法选一段路径复制了。
+       悬停有下划线,提示"这里可以 ⌘ 点"。
+
+       解析放在 activate 里而不是 provideLinks:判断"这是不是路径"只需要文本,
+       而把相对路径拼成绝对路径需要 **pane 此刻的 cwd** —— 那要一次 IPC。
+       悬停一次查一次 cwd 太贵,而且悬停时也用不着。
+
+       ⚠️ 软换行没处理:xterm 把折行后的每一行当独立 buffer line,
+       跨行的路径认不出来。宽终端里少见,先不做。
+
+       悬停下划线和指针光标**不需要写 CSS**:xterm 自己画(`ILink.decorations`
+       不给时默认 underline=true),而且是在渲染层画的,不是 DOM。
+       一度加过一条 `.xterm-link-layer > a:hover` —— 那个类名根本不存在,
+       纯死代码。 */
+    const linkSub = term.registerLinkProvider({
+      provideLinks(y, cb) {
+        const text = term.buffer.active.getLine(y - 1)?.translateToString(true) ?? ''
+        const hits = findPaths(text)
+        if (!hits.length) return cb(undefined)
+        cb(
+          hits.map((h) => ({
+            // xterm 的 range 是 1 起、闭区间
+            range: { start: { x: h.start + 1, y }, end: { x: h.end, y } },
+            text: h.raw,
+            activate: (ev) => {
+              if (!ev.metaKey && !ev.ctrlKey) return
+              void (async () => {
+                const at = await window.termspace.terminalMeta(id, data.cwd).catch(() => null)
+                const abs = toAbsolute(h.path, at?.cwd ?? '', at?.home ?? '')
+                // 拼不出绝对路径就什么都不做 —— 主进程只收绝对路径,
+                // 而拿旧 cwd 硬拼可能开到另一个仓库里的同名文件
+                if (!abs) return
+                const r = await window.termspace
+                  .openInEditor(abs, editorRef.current)
+                  .catch(() => ({ ok: false, error: '打开失败' }) as const)
+                if (!r.ok) term.write(`\r\n\x1b[38;5;244m[打不开 ${h.path}]\x1b[0m\r\n`)
+              })()
+            }
+          }))
+        )
+      }
+    })
+
     const inputSub = term.onData((d) => window.termspace.write(id, d))
 
     // Warp 式复制粘贴：选中即可复制（⌘C），⌘V 粘贴；右键也走这套
@@ -375,6 +433,7 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
       inputSub.dispose()
       offSpawnErr()
       offData()
+      linkSub.dispose()
       offExit()
       window.termspace.kill(id)
       termRef.current = null

@@ -61,7 +61,13 @@ const api = {
   terminalMeta: (
     id: string,
     fallbackCwd?: string
-  ): Promise<{ cwd: string; live: boolean; branch: string | null; dirty: number | null } | null> =>
+  ): Promise<{
+    cwd: string
+    live: boolean
+    branch: string | null
+    dirty: number | null
+    home: string
+  } | null> =>
     ipcRenderer.invoke('terminal:meta', id, fallbackCwd),
   /** 输入框专用：带回执，收到 ok 才能清草稿（`pty:write` 超限会静默丢弃） */
   sendInput: (id: string, data: string): Promise<{ ok: boolean; reason?: string }> =>
