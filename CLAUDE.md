@@ -854,18 +854,43 @@ gitleaks git --log-opts=--all --redact # 凭证熵值
 
 M1–M6 与 F1–F8 均有可用实现；签名公证、手机端、三家额度采集、崩溃日志、工作区导出导入
 均已完成。**发布工程已就绪**（2026-07-28）：x64 包、oxlint、CI skeleton、应用图标、
-GitHub 私有仓库（`Hardboiled98k/termspace`）、Cloudflare R2 更新源
+GitHub 仓库（`Hardboiled98k/termspace`，**已 public**）、Cloudflare R2 更新源
 （`updates.termspace.app`，见 `docs/RELEASE.md`）。明确未做的：
 
 | 未做 | 为什么 |
 |------|--------|
 | **MCP 形态** | F7/F8 现在走 `tb` + 回环 HTTP，够用 |
 | `tb agents` 列远端节点 | 目标 id 现在得去对面画布上看。逐台 ssh 查会拖慢默认命令，等真觉得烦了再做 `tb agents <peer>` |
-| **公开仓库** | **历史已清洗完（2026-07-29）**，仓库仍是私有 —— 转 public 是单独一步，留给人来点。清洗过程与两道验证门见下面「历史清洗」一节 |
 | **手机端完整 PWA / Web Push** | 受安全上下文限制（见上）。「不在电脑前收到提醒」这个**诉求**已由出站通知解决，见下节 |
 | **手机端按设备可撤销 token** | 单用户单机时轮换那把 token 就是撤销，够了 |
 | **记忆系统统筹** | 还没想清形态 |
 | 非订阅 provider 的额度 | 可查的清单与不可查的原因见 `docs/QUOTA.md` |
+
+## 仓库已 public + push 走 SSH（2026-08-30 核实）
+
+`Hardboiled98k/termspace` **已经是 public**（`gh repo view --json visibility` 实测）。
+此前这份文档一直写着「仍是私有，转 public 是单独一步，留给人来点」—— 过期了。
+历史清洗在 0.3.x 已完成，两道验证门见下面「历史清洗」一节。
+
+**因此每次 push 前都要过一遍增量扫描**，不能因为「以前扫过」就跳过：
+
+```bash
+gitleaks git --log-opts="origin/main..HEAD" --redact   # 凭证熵值
+git diff origin/main..HEAD | grep '^+' | grep -nE "/Users/[a-z]|<真实用户名>|100\.[0-9]+\." # 个人信息形状
+```
+
+⚠️ **`/Users/x` 这类合成 fixture 会命中，要逐条看是不是真值**，别看到有命中就慌、
+也别因为「大多是假的」就整批放过。
+
+**HTTPS 推不了，走 SSH。** `gh` 当前的 fine-grained PAT 缺 `Contents: write`：
+读得到（`gh repo view` 正常）、`git push` 报 403
+`Permission to Hardboiled98k/termspace.git denied to Hardboiled98k`。
+账号本身权限是全的（API 报 `admin: true, push: true`）—— **那是账号对仓库的权限，
+不是 token 的权限**，看到它别以为凭据没问题。
+
+绕法：`git push git@github.com:Hardboiled98k/termspace.git main`（SSH 身份已验证正确）。
+根治二选一：给那个 PAT 加 `Contents: Read and write`，或
+`git remote set-url origin git@github.com:Hardboiled98k/termspace.git`。
 
 ## 参考
 
