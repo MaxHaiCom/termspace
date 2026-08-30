@@ -1,36 +1,58 @@
 /**
- * 终端在窄节点里的字号自适应 —— 纯函数，独立成文件才跑得到测试
+ * 终端字号随节点尺寸等比缩放 —— 纯函数，独立成文件才跑得到测试
  * （`.tsx` 里的 JSX 过不了 Node 的 type stripping）。
  */
 const FONT_MIN = 8
 
 /**
- * 节点窄到放不下这么多列时，**自动缩字号**而不是一味减列。
+ * **节点放大 = 字变大，不是多几行几列。**
  *
- * 为什么要这条：agent 的 TUI（claude / codex 的框、diff、表格）是按 80 列画的，
- * 列数掉到六七十时它们会折行折到没法读 —— 而画布的常态就是把节点缩小了扫一眼。
- * 浏览器节点已经按同样的思路做了（`REF_WIDTH` 那段），终端这边一直没有，
- * 所以缩小节点时"内容不自适应"。
+ * 老行为是"字号固定、列数随宽度涨"：把节点拉到两倍大，终端里的字还是那么小，
+ * 只是多出一堆空列 —— 用户报的就是这个（放大等于没放大）。而画布上放大一个节点
+ * 的意图从来是"我要看清这一个"，不是"我要 200 列"。
  *
- * 判据是**先按用户设的字号量一次，不够 80 列才缩**，缩到 FONT_MIN 为止：
- * - 一次成型，不迭代 —— 迭代式的"缩一点再量"会在拖拽时来回抖
- * - 每次都从 base 重新量，所以节点重新拉宽时会自己还原（不会一路缩下去回不来）
- * - 用户设的字号是**上限**，不是固定值。他调大字号 = 想看得更清楚，
- *   在放得下的时候照做；放不下时可读性优先
+ * 所以判据换成**格子数恒定、字号随尺寸走**：
+ *
+ * - 参照系是 `REF_COLS × REF_ROWS`（80×24，agent TUI 按 80 列画）在 `REF_FONT` 下的样子
+ * - 用户设的字号是**相对刻度**：调大 = 参照格子变少（20px → 52×16），
+ *   于是同一个节点里字更大、能看的内容更少 —— 这正是字号旋钮该有的语义。
+ *   注意这里 base 不能约掉：若目标格子恒为 80×24，`font = 宽 / (80·k)`，
+ *   base 会被完全约掉，⌥滚轮就成了死键
+ * - 取**列与行两个方向的较小值**：只把节点拉宽时，字号不会涨到把行数压成三行
+ * - 一次成型不迭代（列数 ∝ 1/字号，一步就能解出来），所以拖拽时不抖；
+ *   每次都从 base 重新量，所以缩小后再拉大回得来
+ * - `FONT_MIN` 是下限，缩不下去就让格子少于目标，不缩成看不见的字
+ *
+ * 返回**实际生效的字号** —— 调用方拿它判 LOD（判据是"屏幕上的有效字号"，
+ * 而这里的有效字号已经和用户设的 `data.fontSize` 不是一回事了）。
  */
-const TARGET_COLS = 80
+const REF_FONT = 13
+const REF_COLS = 80
+const REF_ROWS = 24
+const MIN_COLS = 20
+const MIN_ROWS = 6
 
 export function fitToNode(
-  term: { options: { fontSize?: number }; cols: number },
+  term: { options: { fontSize?: number }; cols: number; rows: number },
   fit: { fit: () => void },
   base: number
-): void {
-  // 先以用户设定量一次：这一步让"变宽后还原"自然成立
+): number {
+  // 先以用户设定量一次：这一步让"改尺寸后回得来"自然成立
   term.options.fontSize = base
   fit.fit()
-  if (term.cols >= TARGET_COLS) return
-  const want = Math.max(FONT_MIN, Math.floor((base * term.cols) / TARGET_COLS))
-  if (want >= base) return
+  const scale = REF_FONT / base
+  const targetCols = Math.max(MIN_COLS, Math.round(REF_COLS * scale))
+  const targetRows = Math.max(MIN_ROWS, Math.round(REF_ROWS * scale))
+  // floor 而非 round：宁可字号小一点、格子多一点，也不要少于目标列数把 TUI 折行
+  const want = Math.max(
+    FONT_MIN,
+    Math.min(
+      Math.floor((base * term.cols) / targetCols),
+      Math.floor((base * term.rows) / targetRows)
+    )
+  )
+  if (want === base) return base
   term.options.fontSize = want
   fit.fit()
+  return want
 }

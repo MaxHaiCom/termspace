@@ -107,9 +107,29 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const zoom = useStore((s) => s.transform[2])
+  /* **实际生效的字号**，不是用户设的那个 —— 节点尺寸会把它等比放大缩小
+     （见 fit-to-node.ts）。LOD 判的是"屏幕上有几个像素高"，
+     拿 data.fontSize 判就等于假装节点还是参照尺寸：把节点拉大一倍再缩画布，
+     屏幕上字还很清楚，内容却已经被收成一块占位。 */
+  const [effFont, setEffFont] = useState(data.fontSize ?? FONT_DEFAULT)
+  /**
+   * 把新格子数交给 pty。**防抖 80ms。**
+   *
+   * 主进程那道「尺寸没变就不发」的守卫挡不住拖拽：`fitToNode` 按**整数**字号算，
+   * 拖动边框时字号会一档一档跳（13→14→13），每跳一次 cols/rows 就真的变一次，
+   * 于是每帧一个 SIGWINCH，zsh 每收到一次重画一遍 prompt —— 屏幕上刷出几十行
+   * 一模一样的提示符。xterm 那侧照旧每帧 fit（视觉跟手），只有**发给 pty 的
+   * 那一下**压到停顿之后。
+   */
+  const sizeTimer = useRef(0)
+  const pushSize = (cols: number, rows: number): void => {
+    window.clearTimeout(sizeTimer.current)
+    sizeTimer.current = window.setTimeout(() => window.termspace.resize(id, cols, rows), 80)
+  }
   // 判据是屏幕上的有效字号，不是缩放本身 —— 见 LOD_EFFECTIVE_FONT_PX
-  const lod = (data.fontSize ?? FONT_DEFAULT) * zoom < LOD_EFFECTIVE_FONT_PX
+  const lod = effFont * zoom < LOD_EFFECTIVE_FONT_PX
   const far = zoom < FAR_ZOOM
+
   // 连到本终端的简报节点（画布连线决定注入哪份上下文）
   const ctxIds = useStore((s) =>
     s.edges
@@ -177,7 +197,7 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
       webgl?.dispose()
       webgl = undefined
     }
-    fit.fit()
+    setEffFont(fitToNode(term, fit, data.fontSize ?? FONT_DEFAULT))
 
     /* 起不来的原因要写进屏幕。**不写的话这个终端就是一块纯黑板** ——
        用户看不出是"还没输出"还是"根本没起来"，这正是这个项目反复栽的静默失败。 */
@@ -230,8 +250,8 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
            shell 会照着重排一遍输出，用户回来看到的是一屏被揉烂的历史。
            元素被 display:none / 折叠 / 尚未布局时都会走到这里。 */
         if (!el.clientWidth || !el.clientHeight) return
-        fitToNode(term, fit, data.fontSize ?? FONT_DEFAULT)
-        window.termspace.resize(id, term.cols, term.rows)
+        setEffFont(fitToNode(term, fit, data.fontSize ?? FONT_DEFAULT))
+        pushSize(term.cols, term.rows)
       })
     })
     ro.observe(el)
@@ -266,8 +286,9 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
     const fit = fitRef.current
     if (!term || !fit) return
     // 走同一条 fitToNode —— 否则用户设的字号会绕过窄节点的自动缩小
-    fitToNode(term, fit, data.fontSize ?? FONT_DEFAULT)
-    window.termspace.resize(id, term.cols, term.rows)
+    setEffFont(fitToNode(term, fit, data.fontSize ?? FONT_DEFAULT))
+    // 同样防抖：⌥滚轮连着滚几下也是一串阶跃
+    pushSize(term.cols, term.rows)
   }, [id, data.fontSize])
 
   // 字号改动时头部短暂提示当前值（⌥滚轮 / 右键菜单调节）
@@ -279,7 +300,13 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
     window.clearTimeout(hintTimer.current)
     hintTimer.current = window.setTimeout(() => setFontHint(false), 1200)
   }
-  useEffect(() => () => window.clearTimeout(hintTimer.current), [])
+  useEffect(
+    () => () => {
+      window.clearTimeout(hintTimer.current)
+      window.clearTimeout(sizeTimer.current)
+    },
+    []
+  )
 
   /* 内容区滚轮分流（原生 non-passive 监听，见 usePinchZoom 注释）：
      pinch → 缩放画布；⌥+滚轮 → 调字号；**普通滚轮一律归终端**。
@@ -385,7 +412,7 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
             ))}
           </select>
         )}
-        {fontHint && <span className="font-hint">{data.fontSize ?? FONT_DEFAULT} px</span>}
+        {fontHint && <span className="font-hint">{effFont} px</span>}
         {ctxPct !== null && (
           <span
             className={`ctx-meter ${ctxPct > 80 ? 'hot' : ctxPct > 60 ? 'warm' : ''}`}

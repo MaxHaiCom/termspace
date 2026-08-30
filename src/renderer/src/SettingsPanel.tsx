@@ -107,6 +107,10 @@ export function SettingsPanel({
   /** 连接串草稿。**只在内存里活一次** —— 保存后主进程不会再回传它 */
   const [brokerTarget, setBrokerTarget] = useState('')
   const [brokerSaving, setBrokerSaving] = useState(false)
+  /** 通知地址草稿。理由同 feedDraft：边打字边落盘会把半截 URL 存进去 */
+  const [notifyDraft, setNotifyDraft] = useState<string | null>(null)
+  /** 「发测试通知」的结果。这条链路失败全是静默的，必须当场说话 */
+  const [notifyMsg, setNotifyMsg] = useState('')
 
   useEffect(() => {
     void window.termspace.getSettings().then(setS)
@@ -704,6 +708,77 @@ export function SettingsPanel({
                 <br />
                 注意 tailnet 里被共享进来的其他人的设备也能打到这个端口 —— 真要隔离，
                 在 Tailscale 后台用 ACL 限制到你自己的设备。
+              </p>
+
+              <h3 className="settings-h">离开电脑时通知我</h3>
+              <label className="settings-row">
+                <span>推送地址</span>
+                {/* 草稿同 updateFeedUrl：边打字边提交会把半截 URL 存成"不合法"清空 */}
+                <input
+                  type="text"
+                  value={notifyDraft ?? s.notifyUrl}
+                  placeholder="https://ntfy.sh/你自己起的一串随机字"
+                  onChange={(e) => setNotifyDraft(e.currentTarget.value)}
+                  onBlur={() => {
+                    if (notifyDraft === null || notifyDraft === s.notifyUrl) return setNotifyDraft(null)
+                    void window.termspace.setSettings({ notifyUrl: notifyDraft }).then(
+                      () => {
+                        setNotifyDraft(null)
+                        setNotifyMsg('')
+                      },
+                      (e) => {
+                        setNotifyDraft(null)
+                        setSaveErr(String((e as { message?: string })?.message ?? e))
+                      }
+                    )
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur()
+                    if (e.key === 'Escape') setNotifyDraft(null)
+                  }}
+                />
+              </label>
+              <label className="settings-row">
+                <span>什么时候推</span>
+                <select
+                  value={s.notifyLevel}
+                  onChange={(e) =>
+                    patch({ notifyLevel: e.currentTarget.value as AppSettings['notifyLevel'] })
+                  }
+                >
+                  <option value="attention">只在 agent 等你时（要批准 / 有问题）</option>
+                  <option value="all">再加上「跑完了」</option>
+                </select>
+              </label>
+              <div className="settings-row">
+                <span>连通性</span>
+                <button
+                  className="settings-btn"
+                  onClick={() => {
+                    setNotifyMsg('发送中…')
+                    void window.termspace
+                      .notifyTest(notifyDraft ?? s.notifyUrl)
+                      .then((r) => setNotifyMsg(r.ok ? '已发出，看看手机收到没' : `失败：${r.error}`))
+                  }}
+                >
+                  发测试通知
+                </button>
+                {notifyMsg && <span className="settings-doctor-detail">{notifyMsg}</span>}
+              </div>
+              <p className="settings-note">
+                填一个 <b>ntfy</b> 或 <b>Bark</b> 的地址（都免费、都能自建、都不用注册）：
+                手机装 app 订阅同一个 topic，agent 卡住等你时就会响。
+                最省事的是 <code>https://ntfy.sh/</code> 后面接一串<b>你自己编的随机字</b>
+                —— 那串字就是密码，别用 <code>termspace</code> 这种能被人猜到的。
+                <br />
+                <b>推文里只有节点标题和状态</b>（「『前端重构』在等你回答」），
+                没有终端内容、没有命令、没有路径、没有你的 tailnet 地址 ——
+                这是 app 里唯一主动往外网发东西的地方，而地址那头不是我们的服务器，
+                消息会留在别人的库里、也会亮在你的锁屏上。所以给的信息刚好够你决定
+                「要不要现在掏手机」，看内容还是得回到上面那个 tailnet 里的页面。
+                <br />
+                只收 <code>https</code>，留空 = 不通知（默认）。同一个节点同一类事
+                一分钟内只推一条。
               </p>
 
               <h3 className="settings-h">想要完整 PWA（离线壳 / 安卓可安装）</h3>

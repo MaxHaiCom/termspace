@@ -36,8 +36,8 @@ export interface RemoteDeps {
   getBoard: () => unknown
   listApprovals: () => unknown[]
   decideApproval: (id: string, allow: boolean) => boolean
-  /** 抓某终端当前屏文本 */
-  peek: (nodeId: string, lines: number) => Promise<string>
+  /** 抓某终端屏幕文本。before = 从尾部往前跳过多少行（手机端翻历史） */
+  peek: (nodeId: string, lines: number, before: number) => Promise<{ text: string; more: boolean }>
   /** 往终端写入（受 allowInput 门控） */
   writeInput: (nodeId: string, text: string) => boolean
 }
@@ -282,7 +282,11 @@ export async function startRemoteApi(deps: RemoteDeps): Promise<RemoteApi> {
            要给的话应当是 owner 逐节点显式开，不是默认全开。 */
         if (viewer) return json(res, 403, { error: '只读访问看不到终端内容' })
         const lines = Math.min(200, Math.max(1, Number(url.searchParams.get('lines')) || 40))
-        return json(res, 200, { nodeId: peek[1], text: await deps.peek(peek[1], lines) })
+        /* before 上限 4000：capture-pane 只抓 800 行历史，超出部分 sliceScreen 会
+           返回空 + more=false，所以这里只需挡住 NaN / 负数 / 天文数字。 */
+        const before = Math.min(4000, Math.max(0, Number(url.searchParams.get('before')) || 0))
+        const scr = await deps.peek(peek[1], lines, before)
+        return json(res, 200, { nodeId: peek[1], text: scr.text, more: scr.more, before })
       }
 
       // ── 写入终端（默认关闭）──

@@ -330,6 +330,29 @@ input:focus {
 #quick:empty {
   display: none;
 }
+#peekbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 12px;
+  flex: none;
+  border-bottom: 0.5px solid var(--hair);
+}
+#peekbar .chip-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+#peekbar button[disabled] {
+  opacity: 0.35;
+}
+#peek-hint {
+  font-size: 12px;
+}
+/* 看历史时把屏幕底色压暗一点：不然「这是旧内容」全靠一行小字，
+   而误把历史当现状去回答是这个功能唯一会真的害人的地方 */
+#term.history #screen-text {
+  background: rgba(255, 176, 32, 0.06);
+}
 .chip-btn {
   flex: none;
   padding: 9px 14px;

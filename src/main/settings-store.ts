@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { isPeerAlias } from './peer'
 import { sanitizeFeedUrl } from './update-url'
+import { sanitizeNotifyLevel, sanitizeNotifyUrl } from './notify'
 
 export interface Settings {
   defaultFontSize: number
@@ -72,6 +73,15 @@ export interface Settings {
    * 别为了"少一次跳转"把 target 放进来。
    */
   brokers: { id: string; name: string; kind: 'ssh' | 'postgres'; readOnly: boolean }[]
+  /**
+   * 出站通知的推送地址（ntfy / Bark 那类）。空 = 不通知，这是默认。
+   *
+   * ⚠️ 这是整个 app 里**唯一主动往外网发东西**的地方，且这里没有可信服务器 ——
+   * 地址是用户自己填的。所以正文只有节点标题和状态，判据见 notify.ts 的文件头。
+   */
+  notifyUrl: string
+  /** 'attention' = 只在 agent 等你时；'all' = 加上「跑完了」 */
+  notifyLevel: 'attention' | 'all'
 }
 
 /**
@@ -106,7 +116,9 @@ export const DEFAULTS: Settings = {
   autoUpdate: true,
   updateFeedUrl: OFFICIAL_FEED,
   editorCommand: '',
-  brokers: []
+  brokers: [],
+  notifyUrl: '',
+  notifyLevel: 'attention'
 }
 
 const file = (): string => path.join(app.getPath('userData'), 'settings.json')
@@ -183,7 +195,12 @@ function sanitize(s: Settings): Settings {
             readOnly: b.readOnly !== false
           }))
           .slice(0, 30)
-      : []
+      : [],
+    /* 和 updateFeedUrl 一样只收 https，但**不回落任何默认值** ——
+       「没配」在这里是完全正常的状态，而给一个默认地址等于替用户选了
+       一个第三方服务并开始往那儿发东西。 */
+    notifyUrl: sanitizeNotifyUrl(s.notifyUrl),
+    notifyLevel: sanitizeNotifyLevel(s.notifyLevel)
   }
 }
 

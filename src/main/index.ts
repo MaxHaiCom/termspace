@@ -58,6 +58,8 @@ import {
   PEER_TIMEOUTS
 } from './peer'
 import { resolveBind } from './net-iface'
+import { sliceScreen, type Screen } from './peek-text.ts'
+import { createNotifier, sendTestNotification, type Notifier } from './notify.ts'
 import { issueToken, loadTokens, revokeToken, toMeta } from './remote-tokens'
 
 /** remote token 表的位置。IPC 和启动处共用一个来源，别两边各拼一次路径 */
@@ -175,19 +177,24 @@ let workerWatch: WorkerWatch | null = null
 let mainWin: BrowserWindow | null = null
 let remoteApi: RemoteApi | null = null
 let quotaHub: QuotaHub | null = null
+/* 通知设置存一份在内存里：`createNotifier` 每次发之前现取，
+   用户在设置面板改完要立刻生效（同 remoteAllowInput 那套） */
+let notifyUrl = ''
+let notifyLevel: 'attention' | 'all' = 'attention'
+const notifier: Notifier = createNotifier({
+  get: () => ({ url: notifyUrl, level: notifyLevel })
+})
 
-/** 抓某终端当前屏尾部若干行的纯文本（消息中心和远程 API 共用） */
+/**
+ * 抓某终端屏幕文本（消息中心和远程 API 共用）。
+ * `before` = 从尾部往前跳过多少行，手机端翻历史用（裁剪判据见 peek-text.ts）。
+ */
+async function peekScreen(id: string, lines: number, before = 0): Promise<Screen> {
+  return sliceScreen(await capturePane(id), lines, before)
+}
+
 async function peekPane(id: string, lines: number): Promise<string> {
-  const raw = await capturePane(id)
-  if (!raw) return ''
-  return raw
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '') // 去掉 ANSI 转义，给 UI 用纯文本
-    .split('\n')
-    .map((l) => l.replace(/\s+$/, ''))
-    .filter((l, i, arr) => l !== '' || (i > 0 && arr[i - 1] !== '')) // 压掉连续空行
-    .slice(-Math.max(1, Math.min(200, lines)))
-    .join('\n')
-    .trim()
+  return (await peekScreen(id, lines)).text
 }
 /**
  * 给审批卡片附上规则引擎的判定（桌面与手机端共用同一份）。
@@ -260,6 +267,12 @@ const withLedger = (meta: LedgerMeta, run: () => Promise<string>): Promise<strin
  * 是两件可信度完全不同的事。从画布快照里查（组 → worktree.branch）——
  * 主进程本来就有这份快照，不必再问 renderer。
  */
+/** 节点标题。通知正文只配拿这个 —— 别把 cwd / 命令行拼进来，见 notify.ts 文件头 */
+function titleOfNode(nodeId: string): string {
+  const b = boardSnapshot as { nodes?: { id: string; title?: string }[] } | null
+  return b?.nodes?.find((n) => n.id === nodeId)?.title ?? nodeId
+}
+
 function branchOfNode(nodeId: string): string | undefined {
   const b = boardSnapshot as { nodes?: { id: string; parentId?: string; worktree?: { branch?: string } }[] } | null
   const nodes = b?.nodes
@@ -299,7 +312,7 @@ async function startRemote(bindMode: string, port: number): Promise<void> {
       getBoard: () => boardSnapshot,
       listApprovals: () => withVerdict(hookSystem?.listApprovals() ?? []),
       decideApproval: (id, allow) => hookSystem?.decideApproval(id, allow) ?? false,
-      peek: (nodeId, lines) => peekPane(nodeId, lines),
+      peek: (nodeId, lines, before) => peekScreen(nodeId, lines, before),
       writeInput: (nodeId, text) => {
         const p = ptys.get(nodeId)
         if (!p) return false
@@ -942,12 +955,22 @@ ipcMain.on('pty:write', (e, id: string, data: string) => {
 
 ipcMain.on('pty:resize', (e, id: string, cols: number, rows: number) => {
   if (!fromMainWin(e) || !okId(id)) return
-  if (cols > 0 && rows > 0) {
-    try {
-      ptys.get(id)?.resize(cols, rows)
-    } catch {
-      // resize 竞态：进程刚退出时忽略
-    }
+  if (cols <= 0 || rows <= 0) return
+  const p = ptys.get(id)
+  if (!p) return
+  /* **尺寸没变就别 resize。** `pty.resize()` 无条件发 TIOCSWINSZ，
+     内核照发 SIGWINCH，zsh 每收到一次就重画一遍 prompt —— 而拖拽节点时
+     renderer 是每帧调一次的。用户报的"缩放窗口刷出几十行重复 prompt"
+     就是这么来的（一帧一行）。
+
+     守卫放在这里而不是调用侧：`IPty` 自带 readonly cols/rows，这是唯一
+     知道 pty **当前**尺寸的地方；放调用侧则每个 caller 各存一份影子状态，
+     还会和"接回已存在 tmux 会话"这类不经过 renderer 的路径对不上。 */
+  if (p.cols === cols && p.rows === rows) return
+  try {
+    p.resize(cols, rows)
+  } catch {
+    // resize 竞态：进程刚退出时忽略
   }
 })
 
@@ -1100,7 +1123,26 @@ ipcMain.handle('settings:set', async (e, patch: Partial<Settings>) => {
   }
   autoUpdateEnabled = next.autoUpdate
   updateFeedUrl = next.updateFeedUrl // 改完地址不用重启，下次检查就用新的
+  notifyUrl = next.notifyUrl // 同上：改完立刻生效
+  notifyLevel = next.notifyLevel
   return next
+})
+
+/**
+ * 「发一条测试通知」。**必须存在**：这条链路的失败全都是静默的
+ * （地址写错 / topic 打错 / 手机没订阅），没有这个按钮用户只能等一次真事件，
+ * 而真事件恰恰发生在他不在电脑前的时候。
+ *
+ * 用面板里当前填的地址，不是已保存的那个 —— 用户的心智是"填完点一下试试"。
+ */
+ipcMain.handle('notify:test', async (e, url: unknown) => {
+  if (!fromMainWin(e)) return { ok: false, error: 'denied' }
+  try {
+    await sendTestNotification(typeof url === 'string' ? url : '')
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: String(err instanceof Error ? err.message : err) }
+  }
 })
 
 /** 远程访问状态（设置面板显示地址与配对 token） */
@@ -1890,6 +1932,8 @@ app.whenReady().then(async () => {
   const installHooks = st.claudeHooks === 'on'
   remoteAllowInput = st.remoteAllowInput
   remoteAllowApprove = st.remoteAllowApprove
+  notifyUrl = st.notifyUrl
+  notifyLevel = st.notifyLevel
 
   // hook 系统先于窗口（pty spawn 需要 endpoint 路径）；失败不阻塞启动
   contextTail = createContextTail((u) => sendToWin('agent:context', u))
@@ -1898,6 +1942,8 @@ app.whenReady().then(async () => {
       (e) => {
         sendToWin('agent:status', e)
         remoteApi?.push('status', e)
+        // 「我不在电脑面前」：agent 卡住等你时推一条到手机。默认没配地址 = 不发
+        notifier.onState(e.nodeId, e.state, titleOfNode(e.nodeId))
         // 派活等待判完成 + 会话存活判定（sessionId 用来挡已结束会话的迟到事件）
         noteStatus(e.nodeId, e.state, e.event, e.sessionId)
       },
@@ -2094,6 +2140,9 @@ app.whenReady().then(async () => {
         const enriched = withVerdict(list)
         sendToWin('approvals:update', enriched)
         remoteApi?.push('approvals', enriched)
+        /* 和上面的 blocked 是同一件事的两条上报路径（PermissionRequest hook /
+           托管 PreToolUse 拦截），notifier 里共用 'attention' 节流键去重。 */
+        for (const a of list) notifier.onApprovalPending(a.nodeId, titleOfNode(a.nodeId))
       },
       installHooks
     )

@@ -38,6 +38,9 @@ const api = {
     { label: string; role: 'owner' | 'viewer'; createdAt: number; expiresAt?: number; hint: string }[]
   > => ipcRenderer.invoke('remote:revoke', hint),
   remoteStatus: (): Promise<unknown> => ipcRenderer.invoke('remote:status'),
+  // 出站通知的连通性自检（设置 → 远程访问）
+  notifyTest: (url: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('notify:test', url),
   reapSessions: (knownIds: string[]): Promise<number> =>
     ipcRenderer.invoke('sessions:reap', knownIds),
   listSkills: (): Promise<unknown> => ipcRenderer.invoke('skills:list'),

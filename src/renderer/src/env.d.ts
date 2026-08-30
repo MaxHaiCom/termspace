@@ -46,6 +46,9 @@ interface AppSettings {
   updateFeedUrl: string
   editorCommand: string
   brokers: BrokerMeta[]
+  /** 出站通知的推送地址（ntfy / Bark）。空 = 不通知 */
+  notifyUrl: string
+  notifyLevel: 'attention' | 'all'
 }
 
 /** 更新状态。五档必须能区分 —— 界面据此决定显示什么 */
@@ -174,6 +177,7 @@ interface TermspaceApi {
     consent: 'ask' | 'on' | 'off'
   }>
   uninstallHooks: () => Promise<{ ok: boolean; changed?: boolean }>
+  notifyTest: (url: string) => Promise<{ ok: boolean; error?: string }>
   remoteStatus: () => Promise<{
     enabled: boolean
     allowInput: boolean

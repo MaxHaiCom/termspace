@@ -21,11 +21,15 @@
   --tb-font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
   --tb-font-ui:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', sans-serif;
-  /* 多层阴影：贴地 + 环境光（apple-design-skill 风格） */
+  /* 多层阴影：贴地 + 环境光（apple-design-skill 风格）。
+     **深色底上的阴影只能靠"小而近"**：画布本身已经是 #0f0f10，
+     再叠 40px/0.4 的黑只会在节点下方糊出一滩比画布更黑的死区 —— 那不是景深，
+     是脏。用户报的就是这个。深色模式里的层次来自
+     「面比底亮 + 发丝线 + 顶部内高光」，阴影只负责最后一点贴地感。 */
   --tb-shadow-card:
-    0 0 0 0.5px rgba(0, 0, 0, 0.4),
-    0 2px 8px rgba(0, 0, 0, 0.24),
-    0 16px 40px rgba(0, 0, 0, 0.4);
+    0 0 0 0.5px rgba(0, 0, 0, 0.28),
+    0 1px 3px rgba(0, 0, 0, 0.18),
+    0 10px 24px rgba(0, 0, 0, 0.2);
 }
 
 html,
@@ -86,7 +90,7 @@ body {
   box-shadow:
     0 0 0 1px rgba(10, 132, 255, 0.55),
     0 0 26px rgba(10, 132, 255, 0.22),
-    0 14px 34px rgba(0, 0, 0, 0.45);
+    0 10px 24px rgba(0, 0, 0, 0.24);
 }
 .term-node,
 .context-node,
@@ -536,14 +540,6 @@ body {
   height: 100%;
   padding: 10px 6px 10px 12px;
 }
-
-/* ── 极远缩放：节点退化成状态色块 + 恒定尺寸标签 ─────── */
-/* 远景默认态 = **几乎不占视觉重量**。
-   老实现给空闲节点填 #4a4a4f 一块实心灰 —— 而「空闲」恰恰是没有语义的那个状态，
-   却因此在全景里最抢眼（画布上多数节点都空闲，于是满屏灰块）。
-   这与 DESIGN.md「glow 只给语义」是同一条：**无语义的状态不该占视觉重量**。
-   现在空闲只留一层极淡的底 + 发丝描边（说明"这儿有个节点"），
-   而蓝/橙/红照旧实心 —— 全景一眼扫过去，跳出来的只有真需要你的那几个。 */
 .term-node.far,
 .worker-node.far,
 .browser-node.far,
@@ -2612,3 +2608,4 @@ body {
 .group-diff-new {
   color: var(--tb-green);
 }
+

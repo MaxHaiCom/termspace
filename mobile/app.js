@@ -26,6 +26,12 @@ let latest = null // 最近一次 /api/board 响应
 let currentId = null // 正在看的终端
 let boardTimer = 0
 let peekTimer = 0
+/* 往回翻了多少行（0 = 最新一屏）。**看历史时禁掉选项按钮和快捷键** ——
+   历史里的「1. Yes」按下去会答到当前这个完全不同的问题上。 */
+let peekBefore = 0
+const PEEK_LINES = 60
+/* 每次往回翻 40 行而不是整屏 60：留 20 行重叠，接得上上下文 */
+const PEEK_STEP = 40
 
 // ── 会话 token ───────────────────────────────────────────────────────────────
 
@@ -410,9 +416,12 @@ function nodeById(id) {
 
 function openTerm(id) {
   currentId = id
+  peekBefore = 0
   const n = nodeById(id)
   $('term-title').textContent = n?.title || id
   $('screen-text').textContent = '读取中…'
+  // 从一个翻着历史的终端切过来时，别让旧的「往前 N 行」留在屏幕上
+  renderPeekbar(false)
   $('choices').textContent = ''
   $('quick').textContent = ''
   screen('term')
@@ -423,6 +432,7 @@ function openTerm(id) {
 
 function closeTerm() {
   currentId = null
+  peekBefore = 0
   clearInterval(peekTimer)
   peekTimer = 0
   screen('board')
@@ -434,33 +444,60 @@ async function refreshTerm() {
      而选项按钮读的是全局 currentId —— 用户看着 A 的问题，答案发进了 B。 */
   const id = currentId
   try {
-    const r = await api(`/api/terminal/${encodeURIComponent(id)}?lines=60`)
-    if (id !== currentId) return // 期间换终端了，这份响应作废
+    /* before 也钉在这一刻：翻页请求飞在路上时用户又点了一下，
+       晚到的那份不该把 peekbar 的状态改回去 */
+    const before = peekBefore
+    const r = await api(
+      `/api/terminal/${encodeURIComponent(id)}?lines=${PEEK_LINES}&before=${before}`
+    )
+    if (id !== currentId || before !== peekBefore) return // 期间换终端/又翻了页，这份响应作废
     if (!r.ok) {
       note(r.status === 404 ? '这个终端在电脑上已经没了' : `读取失败（${r.status}）`)
       return
     }
-    const { text } = await r.json()
-    if (id !== currentId) return
+    const { text, more } = await r.json()
+    if (id !== currentId || before !== peekBefore) return
     const pre = $('screen-text')
     const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40
-    pre.textContent = text || '（这个终端还没有输出）'
+    pre.textContent = text || (before ? '（往前没有更多了）' : '（这个终端还没有输出）')
     if (atBottom) pre.scrollTop = pre.scrollHeight
+    renderPeekbar(more)
 
     const n = nodeById(currentId)
     const st = n?.status || 'idle'
     $('term-status').textContent = STATE_LABEL[st] || st
     $('term-status').dataset.status = st
 
-    /* 按钮把目标 id 闭包进去：切了终端还没重画时点下去，也只会发给它本来那一个 */
+    /* 按钮把目标 id 闭包进去：切了终端还没重画时点下去，也只会发给它本来那一个。
+       **翻着历史时一个都不给**：历史里的「1. Yes」按下去会答到当前那个
+       完全不同的问题上，而屏幕上看不出这一点。 */
     renderChips(
-      $('choices'), id, parseChoices(text),
+      $('choices'), id, before ? [] : parseChoices(text),
       (c) => send(`${c.key}\r`, id), (c) => `${c.key} ${c.label}`
     )
-    renderChips($('quick'), id, quickFor(st), (q) => send(`${q}\r`, id), (q) => q)
+    renderChips($('quick'), id, before ? [] : quickFor(st), (q) => send(`${q}\r`, id), (q) => q)
   } catch {
     // 网络抖动/切后台，等下一拍
   }
+}
+
+/** 翻历史条。`more` 由服务端算（它才知道 capture-pane 抓到了多少行） */
+function renderPeekbar(more) {
+  // 没历史可翻时整条收起来 —— 一条全是灰按钮的横条只是在占位
+  $('peekbar').hidden = peekBefore === 0 && !more
+  $('peek-older').disabled = !more
+  $('peek-latest').hidden = peekBefore === 0
+  $('peek-hint').textContent = peekBefore ? `往前 ${peekBefore} 行 · 不是当前画面` : ''
+  // 底色变暗 + 禁掉选项，两个信号一起给：只有一行小字的话，误把历史当现状太容易了
+  $('term').classList.toggle('history', peekBefore > 0)
+}
+
+function peekJump(delta) {
+  const next = Math.max(0, peekBefore + delta)
+  if (next === peekBefore) return
+  peekBefore = next
+  renderPeekbar(true) // 先让按钮状态跟手，真正的 more 等响应回来再校准
+  refreshTerm()
 }
 
 function renderChips(host, id, items, onTap, label) {
@@ -763,6 +800,9 @@ function start() {
     checkStale()
   }, 2500)
 }
+
+$('peek-older').addEventListener('click', () => peekJump(PEEK_STEP))
+$('peek-latest').addEventListener('click', () => peekJump(-Infinity))
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return

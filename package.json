@@ -1,6 +1,6 @@
 {
   "name": "termspace",
-  "version": "0.4.1",
+  "version": "0.4.3",
   "description": "无限画布终端管理器 — terminals as nodes on an infinite canvas",
   "main": "./out/main/index.js",
   "private": true,

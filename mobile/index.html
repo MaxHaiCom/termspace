@@ -66,6 +66,13 @@
         <span class="grow"></span>
         <span id="term-status" class="chip"></span>
       </header>
+      <!-- 翻历史条：capture-pane 抓了 800 行，手机上一屏只有几十行，
+           agent 的推理过程恰恰在滚上去那一段 -->
+      <div id="peekbar">
+        <button id="peek-older" class="chip-btn">↑ 更早</button>
+        <button id="peek-latest" class="chip-btn" hidden>↓ 回到最新</button>
+        <span id="peek-hint" class="muted"></span>
+      </div>
       <pre id="screen-text" aria-live="polite"></pre>
       <div id="choices"></div>
       <div id="quick"></div>
