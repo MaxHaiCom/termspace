@@ -2275,6 +2275,13 @@ function Board(): React.JSX.Element {
          ⌘K 语义，而这个键的价值恰恰在于"手在键盘上就能换地方"。
          （⌘Z 相反：终端里那是它自己的撤销，所以下面那条要避开。） */
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        /* **但输入框里要放行。** 终端节点底部的输入框是个真 textarea，
+           `Ctrl+K` 在 macOS 里是原生的「删到行尾」，⌘K 也可能是编辑手势 ——
+           全局吞掉的话，用户在输入框里按这两个键会莫名其妙弹出命令面板。
+           终端本体（.term-node-body）不在此列：那里没有原生文本编辑语义，
+           上面那段注释说的「终端里 ⌘K 也要能开」仍然成立。 */
+        const t0 = e.target as HTMLElement | null
+        if (t0?.closest('.term-composer')) return
         e.preventDefault()
         setPaletteOpen((v) => !v)
         return

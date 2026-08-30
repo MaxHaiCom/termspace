@@ -3,6 +3,7 @@ import { IdentityContext, RequestDeleteContext } from '../identity-context'
 import { FarChip, FAR_ZOOM } from './FarChip'
 import { usePinchZoom } from '../usePinchZoom'
 import { fitToNode } from '../fit-to-node'
+import { checkComposerSend, explainReject } from '../composer-send'
 import {
   Handle,
   NodeResizer,
@@ -37,6 +38,8 @@ export type TermNode = Node<
      * 用户点节点上那个按钮，才把它变成 command 并重开会话。
      */
     suggestedCommand?: string
+    /** 底部输入框展开与否。**只存这个开关，不存草稿正文** —— 见 draftStore */
+    composer?: boolean
   },
   'terminal'
 >
@@ -98,6 +101,17 @@ const STATUS_LABEL: Record<TermStatus, string> = {
   error: '已退出'
 }
 
+/**
+ * 输入框草稿。**故意只活在 renderer 进程内存里,不进 `SavedNode`。**
+ *
+ * 草稿是没发出去的 prompt —— 里面可能有密钥、客户名、内部路径。
+ * 而工作区会落盘、会备份、会被「导出画布」发给别人。存进去等于把
+ * 用户随手打了一半的东西一起送出门。
+ * 代价：reload / 重启 app 后草稿没了。这是有意的取舍,不是遗漏。
+ */
+const draftStore = new Map<string, string>()
+const DRAFT_MAX = 100_000
+
 const FONT_MIN = 8
 const FONT_MAX = 24
 const FONT_DEFAULT = 13
@@ -126,9 +140,104 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
     window.clearTimeout(sizeTimer.current)
     sizeTimer.current = window.setTimeout(() => window.termspace.resize(id, cols, rows), 80)
   }
+  const composerOn = data.composer === true
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  const [draft, setDraft] = useState(() => draftStore.get(id) ?? '')
+  const [sendErr, setSendErr] = useState('')
+  const writeDraft = (v: string): void => {
+    const t = v.slice(0, DRAFT_MAX)
+    draftStore.set(id, t)
+    setDraft(t)
+    if (sendErr) setSendErr('')
+  }
+
+  /**
+   * 输入框提交。
+   *
+   * 三条判据，改之前先看：
+   * - **对端开没开括号粘贴要现查**（`term.modes.bracketedPasteMode`）。那是 xterm
+   *   解析对端字节得出的观测值；缓存下来就会在 agent 退出到 shell 之后继续用旧结论。
+   * - **拿到回执才清草稿。** `pty:write` 超限/会话已死时静默丢弃 —— 先清后发
+   *   等于用户打了一大段、按了发送、然后什么都没发生且稿子没了。
+   * - **目标 id 在发之前就钉住。** 这里其实是闭包里的 `id`，天然安全；
+   *   写下来是因为 mobile/app.js 在同一件事上栽过（await 之后读全局 currentId，
+   *   慢网下 A 的响应画到 B 上）。
+   */
+  const submitDraft = async (): Promise<void> => {
+    const term = termRef.current
+    if (!term) return
+    const r = checkComposerSend(draft, {
+      bracketed: term.modes.bracketedPasteMode,
+      submit: true
+    })
+    if (!r.ok) {
+      setSendErr(explainReject(r.reason))
+      return
+    }
+    const res = await window.termspace.sendInput(id, r.bytes)
+    if (!res.ok) {
+      setSendErr(
+        res.reason === 'too-long'
+          ? '太长了，超过单次写入上限。分几次发。'
+          : res.reason === 'no-session'
+            ? '这个终端的会话已经不在了。'
+            : '没发出去。'
+      )
+      return
+    }
+    draftStore.delete(id)
+    setDraft('')
+    setSendErr('')
+    // 刚发出去的很可能是 cd / git 命令 —— 立刻补一轮，别让 chips 陈旧十秒
+    setMetaTick((v) => v + 1)
+  }
+
   // 判据是屏幕上的有效字号，不是缩放本身 —— 见 LOD_EFFECTIVE_FONT_PX
   const lod = effFont * zoom < LOD_EFFECTIVE_FONT_PX
   const far = zoom < FAR_ZOOM
+
+  /**
+   * chips 的数据。**自调度轮询，不是 setInterval。**
+   *
+   * 用 `setInterval` 的话，一轮查询比周期慢（git 在大仓库上会）就会堆叠，
+   * 而且旧的那轮回来得晚会把新结果盖掉。这里每轮**跑完再排下一轮**。
+   *
+   * 为什么是轮询而不是事件：普通 `cd` / `git switch` / 在别处编辑文件
+   * 都不经过 agent hook，`pty:data` 又太高频。10 秒一轮够了 —— chips 是
+   * 参考信息，不是需要即时的东西。
+   *
+   * LOD / 远景 / 标签页在后台时**停掉**：那几档 chips 根本看不见，
+   * 而画布上可能有几十个节点在各自跑 git。
+   */
+  const [meta, setMeta] = useState<{
+    cwd: string
+    live: boolean
+    branch: string | null
+    dirty: number | null
+  } | null>(null)
+  const [metaTick, setMetaTick] = useState(0)
+  useEffect(() => {
+    if (!composerOn || lod) return
+    let alive = true
+    let timer = 0
+    const round = async (): Promise<void> => {
+      if (!alive || document.hidden) {
+        // 后台时不查，但保持排期 —— 否则切回来要等下一次挂载才恢复
+        timer = window.setTimeout(() => void round(), 10_000)
+        return
+      }
+      const r = await window.termspace.terminalMeta(id, data.cwd).catch(() => null)
+      if (!alive) return
+      setMeta(r)
+      timer = window.setTimeout(() => void round(), 10_000)
+    }
+    void round()
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
+    // metaTick：提交成功 / 状态变化时立刻补一轮（用户刚 cd 完就想看到新分支）
+  }, [id, composerOn, lod, data.cwd, data.status, metaTick])
 
   // 连到本终端的简报节点（画布连线决定注入哪份上下文）
   const ctxIds = useStore((s) =>
@@ -234,7 +343,11 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
         return false
       }
       if (e.key === 'v') {
-        void navigator.clipboard.readText().then((t) => window.termspace.write(id, t))
+        /* **必须走 `term.paste()`,不能裸 `write`。** 裸发时多行剪贴板里的每个
+           换行都是一次 Enter —— 粘一段脚本进 shell 就是逐行执行。
+           `term.paste()` 会归一换行成 CR 并按对端**实际**的 `?2004h` 决定
+           包不包括号粘贴,包上之后整段是"一次粘贴"而不是一串按键。 */
+        void navigator.clipboard.readText().then((t) => term.paste(t))
         return false
       }
       return true
@@ -461,6 +574,16 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
             上下文已变 · 重开注入
           </button>
         )}
+        <button
+          className={`composer-toggle nodrag${composerOn ? ' on' : ''}`}
+          title={composerOn ? '收起输入框' : '展开输入框（多行、可选中编辑，⏎ 发送 / ⇧⏎ 换行）'}
+          onClick={(e) => {
+            e.stopPropagation()
+            updateNodeData(id, { composer: !composerOn })
+          }}
+        >
+          ⌨
+        </button>
         <span className={`status-chip ${data.status}`}>{STATUS_LABEL[data.status]}</span>
         <button
           className="term-node-close nodrag"
@@ -486,10 +609,80 @@ function TerminalNodeImpl({ id, data, selected }: NodeProps<TermNode>): React.JS
           if (term?.hasSelection()) {
             void navigator.clipboard.writeText(term.getSelection())
           } else {
-            void navigator.clipboard.readText().then((t) => window.termspace.write(id, t))
+            void navigator.clipboard.readText().then((t) => termRef.current?.paste(t))
           }
         }}
       />
+      {composerOn && !lod && (
+        /* **必须是 holder 的兄弟节点,不能塞进 holder** —— 那个 div 整个是
+           xterm 的地盘,FitAddon 按它的高度算行数。
+           `nodrag nowheel nopan`:React Flow 会抢拖拽/滚轮/平移,不挡的话
+           在输入框里选文字就变成拖节点。 */
+        <div className="term-composer nodrag nowheel nopan">
+          {/* `❯` 把这条锚回**终端**语义。没有它,一个带边框的输入框在终端下面
+              就是个外挂表单;有它,它读起来是"这个终端的输入行"。 */}
+          <span className="tc-prompt">❯</span>
+          <textarea
+            ref={taRef}
+            className="term-composer-input"
+            value={draft}
+            rows={1}
+            placeholder="输入…"
+            spellCheck={false}
+            onChange={(e) => writeDraft(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              /* **先判 isComposing。** 中文/日文输入法用回车确认候选词 ——
+                 不判的话打「你好」按回车,发出去的是半截拼音,而且草稿就没了。
+                 这是中文用户每天都会撞到的一条。 */
+              if (e.nativeEvent.isComposing) return
+              if (e.key === 'Escape') {
+                e.stopPropagation()
+                termRef.current?.focus()
+                return
+              }
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                e.stopPropagation()
+                void submitDraft()
+              }
+            }}
+          />
+          {/* chips 和发送提示**共用右侧**:没打字时显示上下文,打了字就让位给发送。
+              两者不同时出现,所以不占两份宽度。 */}
+          {draft.trim() ? (
+            <button className="tc-send" onClick={(e) => { e.stopPropagation(); void submitDraft() }}>
+              ⏎ 发送
+            </button>
+          ) : (
+            meta && (
+              <span className="term-composer-chips">
+                {/* **`live:false` 必须写出来。** 那时显示的是建节点时那个目录,
+                    用户 cd 过之后它就是错的 —— 不标注等于安静地撒谎。 */}
+                <span
+                  className={`tc-chip${meta.live ? '' : ' stale'}`}
+                  title={meta.live ? meta.cwd : `启动目录（查不到 pane 的当前目录）\n${meta.cwd}`}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation()
+                    void navigator.clipboard.writeText(meta.cwd)
+                  }}
+                >
+                  {meta.live ? '' : '↩ '}
+                  {meta.cwd.replace(/^\/Users\/[^/]+/, '~').split('/').slice(-2).join('/')}
+                </span>
+                {meta.branch && <span className="tc-chip">⑂ {meta.branch}</span>}
+                {/* dirty 为 null = 查询失败或不是仓库。**不显示"干净"** ——
+                    把"没查到"画成"没改动"是这个项目反复栽过的那类错。 */}
+                {meta.dirty !== null && meta.dirty > 0 && (
+                  <span className="tc-chip dirty" title={`${meta.dirty} 个文件有改动`}>
+                    ●{meta.dirty}
+                  </span>
+                )}
+              </span>
+            )
+          )}
+          {sendErr && <div className="term-composer-err">{sendErr}</div>}
+        </div>
+      )}
       {lod && !far && (
         <div className="term-node-lod">
           {/* 内容 ×(1/zoom)，再被画布 ×zoom → **屏幕尺寸恒定**，和 FarChip 同一招。

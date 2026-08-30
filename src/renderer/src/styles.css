@@ -540,6 +540,24 @@ body {
   height: 100%;
   padding: 10px 6px 10px 12px;
 }
+/* xterm 自己的样式表把 viewport 写死成 `background-color: #000`
+   （它的注释说是 macOS 上让滚动条完全不透明的 workaround）。
+   canvas 只画到最后一行为止,底下那点余量 + padding 区域就漏出**纯黑**——
+   实测是一条 12px 的黑带,贴在终端内容和节点底边之间。
+   节点其余部分是 #131315,所以那条带子一直看得见,只是以前底下没东西、
+   不容易注意；加了输入框之后它正好夹在中间,读起来就是"输入框是贴上去的"。
+   量出来的:终端 (19,19,21) → 黑带 (0,0,0) → 输入条 (19,19,21)。 */
+.term-node-body .xterm-viewport {
+  background-color: var(--tb-terminal);
+}
+
+/* ── 极远缩放：节点退化成状态色块 + 恒定尺寸标签 ─────── */
+/* 远景默认态 = **几乎不占视觉重量**。
+   老实现给空闲节点填 #4a4a4f 一块实心灰 —— 而「空闲」恰恰是没有语义的那个状态，
+   却因此在全景里最抢眼（画布上多数节点都空闲，于是满屏灰块）。
+   这与 DESIGN.md「glow 只给语义」是同一条：**无语义的状态不该占视觉重量**。
+   现在空闲只留一层极淡的底 + 发丝描边（说明"这儿有个节点"），
+   而蓝/橙/红照旧实心 —— 全景一眼扫过去，跳出来的只有真需要你的那几个。 */
 .term-node.far,
 .worker-node.far,
 .browser-node.far,
@@ -2609,3 +2627,133 @@ body {
   color: var(--tb-green);
 }
 
+/* ── 底部输入框 ─────────────────────────────────────────
+   Warp 底部那条 bar 的等价物,但**是加法不是接管**:终端照常工作,
+   这里只是第二条输入通路。用原生 <textarea> 是关键 ——
+   ⌘A / ⌥←→ / 选中删除 / undo / 输入法全部白得,那正是"顺手"的来源。
+
+   视觉判据(DESIGN.md「Apple / 克制」):**它是终端的最后一行,不是外挂面板**。
+   所以底色沿用 --tb-terminal、只用一条发丝线分隔、输入框本身无边框无圆角。
+   第一版给了它独立的玻璃面板底 + 圆角输入盒 + 独立发送按钮 = 三层堆叠,
+   读起来像贴上去的表单。一行就够。 */
+.term-composer {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 7px 12px 8px;
+  background: var(--tb-terminal);
+  border-top: 0.5px solid var(--tb-hairline);
+  border-radius: 0 0 calc(var(--tb-radius) - 0.5px) calc(var(--tb-radius) - 0.5px);
+  flex-shrink: 0;
+  cursor: text;
+}
+/* 圆角从 body 转交给它 —— 它现在是节点最下面那层 */
+.term-node-body:has(+ .term-composer) {
+  border-radius: 0;
+}
+.tc-prompt {
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tb-blue);
+  opacity: 0.85;
+  user-select: none;
+}
+.term-composer-input {
+  flex: 1;
+  min-width: 0;
+  /* 5 行封顶,再多自己滚 —— 输入框不该把终端挤没 */
+  max-height: 92px;
+  resize: none;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  /* 等宽 + 与终端同字号:打的东西和它将要落进去的地方看起来一致 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+  color: var(--tb-text);
+  caret-color: var(--tb-blue);
+}
+.term-composer-input::placeholder {
+  color: var(--tb-muted);
+  opacity: 0.5;
+}
+/* 有字才出现,和 chips 共用右侧 —— 两者不同时在,不占两份宽度 */
+.tc-send {
+  flex-shrink: 0;
+  padding: 1px 9px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--tb-blue);
+  background: rgba(10, 132, 255, 0.14);
+  border: 0.5px solid rgba(10, 132, 255, 0.3);
+  border-radius: 980px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tc-send:hover {
+  background: rgba(10, 132, 255, 0.22);
+}
+.term-composer-chips {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: 55%;
+  overflow: hidden;
+}
+.tc-chip {
+  flex-shrink: 1;
+  min-width: 0;
+  padding: 1px 7px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--tb-muted);
+  background: rgba(255, 255, 255, 0.045);
+  border-radius: 980px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 只拿到启动目录(tmux 查不到 pane 当前路径)—— 视觉上就要弱一档,别装成真值 */
+.tc-chip.stale {
+  opacity: 0.5;
+  font-style: italic;
+}
+.tc-chip.dirty {
+  flex-shrink: 0;
+  color: var(--tb-orange);
+  background: rgba(255, 159, 10, 0.12);
+}
+/* 拒发理由。**占整行**,因为它要写清为什么和怎么办,一行小字塞不下 */
+.term-composer-err {
+  flex-basis: 100%;
+  padding-top: 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--tb-orange);
+}
+.composer-toggle {
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--tb-muted);
+  background: transparent;
+  border: 0.5px solid transparent;
+  border-radius: 980px;
+  cursor: pointer;
+}
+.composer-toggle.on {
+  color: var(--tb-blue);
+  background: rgba(10, 132, 255, 0.14);
+  border-color: rgba(10, 132, 255, 0.3);
+}
+/* 远景时整条收掉 —— 那一档连正文都看不见了 */
+.term-node.far .term-composer {
+  display: none;
+}

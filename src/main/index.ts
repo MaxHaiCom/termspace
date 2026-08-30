@@ -85,6 +85,7 @@ import {
   reapOrphanSessions,
   capturePane,
   paneCommand,
+  paneCwd,
   paneProcessProviders
 } from './tmux'
 import { identityValueIsSecret, shellQuote, tmuxClientEnv } from './tmux-args'
@@ -951,6 +952,46 @@ ipcMain.on('pty:write', (e, id: string, data: string) => {
   if (!fromMainWin(e) || !okId(id)) return
   if (typeof data !== 'string' || data.length > PTY_WRITE_LIMIT) return
   ptys.get(id)?.write(data)
+})
+
+/**
+ * 输入框专用的**带回执**写入。
+ *
+ * `pty:write` 是 fire-and-forget，超限或会话已死时**静默丢弃** —— 对逐键输入
+ * 无所谓（丢一个字符看得见），但输入框是「打了一大段、按发送、框清空」：
+ * 静默丢弃 = 用户的稿子没了而且他不知道。所以这条走 invoke 拿回执，
+ * renderer 收到 ok 才清草稿。
+ *
+ * 高频单键仍走 `pty:write`，不要改到这条来（每键一次 IPC 往返不值）。
+ */
+ipcMain.handle('pty:sendInput', (e, id: unknown, data: unknown) => {
+  if (!fromMainWin(e) || typeof id !== 'string' || !okId(id)) return { ok: false, reason: 'bad-target' }
+  if (typeof data !== 'string' || !data) return { ok: false, reason: 'bad-target' }
+  if (data.length > PTY_WRITE_LIMIT) return { ok: false, reason: 'too-long' }
+  const p = ptys.get(id)
+  if (!p) return { ok: false, reason: 'no-session' }
+  p.write(data)
+  return { ok: true }
+})
+
+/**
+ * 输入框上那排 chips 要的东西：**此刻**的目录、分支、脏文件数。
+ *
+ * 两条判据：
+ * - **`live` 必须如实报。** tmux 查得到 `#{pane_current_path}` 才是实时值；
+ *   查不到就退回建节点时那个 cwd 并标 `live:false`，让界面写「启动目录」。
+ *   悄悄拿旧 cwd 冒充实时 = 用户 `cd` 到别的仓库后，chips 一直显示上一个
+ *   仓库的分支，而且不报错、看不出来。
+ * - **只查便宜的。** `git status --porcelain` 数脏文件够用；完整
+ *   `+新增/-删除` 摘要（`diffSummary`）贵得多，只在用户点开时查，不进轮询。
+ */
+ipcMain.handle('terminal:meta', async (e, id: unknown, fallbackCwd: unknown) => {
+  if (!fromMainWin(e) || typeof id !== 'string' || !okId(id)) return null
+  const liveCwd = await paneCwd(id).catch(() => '')
+  const cwd = liveCwd || (typeof fallbackCwd === 'string' ? fallbackCwd : '')
+  if (!cwd) return null
+  const st = await worktreeStatus(cwd).catch(() => null)
+  return { cwd, live: Boolean(liveCwd), branch: st?.branch ?? null, dirty: st?.dirty ?? null }
 })
 
 ipcMain.on('pty:resize', (e, id: string, cols: number, rows: number) => {

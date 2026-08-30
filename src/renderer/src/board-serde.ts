@@ -162,6 +162,8 @@ export interface SavedNode {
   provider?: string
   fontSize?: number
   cwd?: string
+  /** 底部输入框展开与否。**只存开关，草稿正文故意不落盘**（见 TerminalNode 的 draftStore） */
+  composer?: boolean
   url?: string
   collapsed?: boolean
   /** group 专用：绑定的 git worktree（见 GroupNode 的 GroupWorktree） */
@@ -228,7 +230,8 @@ export function fromSaved(s: SavedNode): BoardNode {
       suggestedCommand: s.suggestedCommand,
       provider: s.provider,
       fontSize: s.fontSize,
-      cwd: s.cwd
+      cwd: s.cwd,
+      composer: s.composer === true
     }
   }
 }
@@ -263,6 +266,7 @@ export function toSaved(n: Exclude<BoardNode, WorkerNodeT>): SavedNode {
     suggestedCommand: n.data.suggestedCommand,
     provider: n.data.provider,
     fontSize: n.data.fontSize,
-    cwd: n.data.cwd
+    cwd: n.data.cwd,
+    composer: n.data.composer === true ? true : undefined
   }
 }

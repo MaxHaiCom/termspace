@@ -224,6 +224,28 @@ export function paneCommand(nodeId: string): Promise<string> {
 }
 
 /**
+ * pane **此刻**在哪个目录。
+ *
+ * **不能拿建节点时那个 cwd 顶替。** 那是 spawn 传进去的初始目录，
+ * 用户 `cd` 之后它再也不变 —— 拿它去查 git 会一直显示旧仓库、旧分支，
+ * 而且不报错、不留痕，界面上完全看不出在撒谎。
+ *
+ * 查不到就返回空串，让调用方**如实降级成「启动目录」**，绝不冒充实时值。
+ * （没起 tmux、会话已死、tmux 没装，都会走到这条。）
+ */
+export function paneCwd(nodeId: string): Promise<string> {
+  return new Promise((resolve) => {
+    if (!tmuxPath) return resolve('')
+    execFile(
+      tmuxPath,
+      ['-L', SOCKET, 'display-message', '-p', '-t', paneTarget(nodeId), '#{pane_current_path}'],
+      { timeout: 3000 },
+      (err, stdout) => resolve(err ? '' : stdout.trim())
+    )
+  })
+}
+
+/**
  * pane_current_command 对 Node/Python 包装器会返回 node/Python/版本号，不能用于计数。
  * 这里以 pane PID 为根只看它的子孙，并且只把 provider 名返回渲染层，不返回 argv。
  */

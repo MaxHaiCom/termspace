@@ -57,6 +57,15 @@ const api = {
   browserResult: (r: { reqId: string; ok: boolean; result: string }): void => {
     ipcRenderer.send('browser:result', r)
   },
+  /** 输入框 chips：此刻的 cwd / 分支 / 脏文件数。live=false 表示只拿到启动目录 */
+  terminalMeta: (
+    id: string,
+    fallbackCwd?: string
+  ): Promise<{ cwd: string; live: boolean; branch: string | null; dirty: number | null } | null> =>
+    ipcRenderer.invoke('terminal:meta', id, fallbackCwd),
+  /** 输入框专用：带回执，收到 ok 才能清草稿（`pty:write` 超限会静默丢弃） */
+  sendInput: (id: string, data: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('pty:sendInput', id, data),
   write: (id: string, data: string): void => {
     ipcRenderer.send('pty:write', id, data)
   },

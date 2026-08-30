@@ -254,6 +254,13 @@ interface TermspaceApi {
   ) => () => void
   browserResult: (r: { reqId: string; ok: boolean; result: string }) => void
   write: (id: string, data: string) => void
+  /** 输入框 chips：此刻的 cwd / 分支 / 脏文件数。live=false 表示只拿到启动目录 */
+  terminalMeta: (
+    id: string,
+    fallbackCwd?: string
+  ) => Promise<{ cwd: string; live: boolean; branch: string | null; dirty: number | null } | null>
+  /** 带回执的写入（输入框用）。ok 才代表真进了 pty */
+  sendInput: (id: string, data: string) => Promise<{ ok: boolean; reason?: string }>
   resize: (id: string, cols: number, rows: number) => void
   kill: (id: string) => void
   /** 返回销毁前抓到的屏幕内容，撤回删除时回灌 */
