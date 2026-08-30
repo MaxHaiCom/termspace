@@ -888,9 +888,11 @@ git diff origin/main..HEAD | grep '^+' | grep -nE "/Users/[a-z]|<真实用户名
 账号本身权限是全的（API 报 `admin: true, push: true`）—— **那是账号对仓库的权限，
 不是 token 的权限**，看到它别以为凭据没问题。
 
-绕法：`git push git@github.com:Hardboiled98k/termspace.git main`（SSH 身份已验证正确）。
-根治二选一：给那个 PAT 加 `Contents: Read and write`，或
-`git remote set-url origin git@github.com:Hardboiled98k/termspace.git`。
+**已处理（2026-08-30）**：`origin` 已改成 SSH
+（`git@github.com:Hardboiled98k/termspace.git`），`git push origin main` 直接可用。
+留着这段是因为**症状会误导**：下次若又见 403，先看是不是 remote 被谁改回了 HTTPS，
+别去查仓库权限 —— API 那个 `admin: true` 会把你带偏。
+真想修 PAT 的话，给它加 `Contents: Read and write`。
 
 ## 参考
 
