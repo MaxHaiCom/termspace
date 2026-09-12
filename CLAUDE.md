@@ -954,7 +954,7 @@ gitleaks git --log-opts=--all --redact # 凭证熵值
 
 M1–M6 与 F1–F8 均有可用实现；签名公证、手机端、三家额度采集、崩溃日志、工作区导出导入
 均已完成。**发布工程已就绪**（2026-07-28）：x64 包、oxlint、CI skeleton、应用图标、
-GitHub 仓库（`Hardboiled98k/termspace`，**已 public**）、Cloudflare R2 更新源
+GitHub 仓库（`MaxHaiCom/termspace`，**已 public**）、Cloudflare R2 更新源
 （`updates.termspace.app`，见 `docs/RELEASE.md`）。明确未做的：
 
 | 未做 | 为什么 |
@@ -968,7 +968,7 @@ GitHub 仓库（`Hardboiled98k/termspace`，**已 public**）、Cloudflare R2 �
 
 ## 仓库已 public + push 走 SSH（2026-08-30 核实）
 
-`Hardboiled98k/termspace` **已经是 public**（`gh repo view --json visibility` 实测）。
+`MaxHaiCom/termspace` **已经是 public**（`gh repo view --json visibility` 实测）。
 此前这份文档一直写着「仍是私有，转 public 是单独一步，留给人来点」—— 过期了。
 历史清洗在 0.3.x 已完成，两道验证门见下面「历史清洗」一节。
 
@@ -984,12 +984,14 @@ git diff origin/main..HEAD | grep '^+' | grep -nE "/Users/[a-z]|<真实用户名
 
 **HTTPS 推不了，走 SSH。** `gh` 当前的 fine-grained PAT 缺 `Contents: write`：
 读得到（`gh repo view` 正常）、`git push` 报 403
-`Permission to Hardboiled98k/termspace.git denied to Hardboiled98k`。
+`Permission to Hardboiled98k/termspace.git denied to Hardboiled98k`
+（**这是 2026-08-30 的报错原文**；GitHub 用户名此后从 `Hardboiled98k` 改成了
+`MaxHaiCom`，本节其余地方写的都是改名后的新名）。
 账号本身权限是全的（API 报 `admin: true, push: true`）—— **那是账号对仓库的权限，
 不是 token 的权限**，看到它别以为凭据没问题。
 
 **已处理（2026-08-30）**：`origin` 已改成 SSH
-（`git@github.com:Hardboiled98k/termspace.git`），`git push origin main` 直接可用。
+（`git@github.com:MaxHaiCom/termspace.git`），`git push origin main` 直接可用。
 留着这段是因为**症状会误导**：下次若又见 403，先看是不是 remote 被谁改回了 HTTPS，
 别去查仓库权限 —— API 那个 `admin: true` 会把你带偏。
 真想修 PAT 的话，给它加 `Contents: Read and write`。
